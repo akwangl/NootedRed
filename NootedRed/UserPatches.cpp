@@ -59,6 +59,8 @@ namespace
     const char* const kBootArgVDA              = "-NRedVDA";
     const char* const kBootArgAVC              = "-NRedAVC";
     const char* const kBootArgAVCEncode        = "-NRedAVCEncode";
+    const char* const kBootArgSubmitGuard      = "-NRedSubmitGuard";
+    const char* const kBootArgLegacyBlend      = "-NRedLegacyBlend";
     const char* const kBootArgNoSubmitGuard    = "-NRedNoSubmitGuard";
 
     struct SharedRegionCheckArgs
@@ -381,9 +383,16 @@ void UserPatches::init()
                        || checkKernelArgument(kBootArgAVC)
                        || checkKernelArgument(kBootArgAVCEncode);
 
-    this->submitGuardEnabled = !checkKernelArgument(kBootArgNoSubmitGuard);
+    // SubmitGuard and LegacyBlend rewrite live code in the dyld shared cache of every process that calls
+    // _shared_region_check_np, WindowServer included.  Their offsets are build-specific, so a build the
+    // offsets were not derived from can boot to a black screen.  Both are opt-in now; -NRedNoSubmitGuard
+    // still turns them off wholesale for existing setups.
+    this->submitGuardEnabled =
+        checkKernelArgument(kBootArgSubmitGuard) && !checkKernelArgument(kBootArgNoSubmitGuard);
+    this->legacyBlendEnabled =
+        checkKernelArgument(kBootArgLegacyBlend) && !checkKernelArgument(kBootArgNoSubmitGuard);
 
-    if (!this->enabled && !this->vdaEnabled && !this->submitGuardEnabled) {
+    if (!this->enabled && !this->vdaEnabled && !this->submitGuardEnabled && !this->legacyBlendEnabled) {
         DBGLOG("UserPatch", "User-space driver patches are disabled");
         return;
     }
@@ -396,6 +405,7 @@ void UserPatches::init()
     }
     if (this->vdaEnabled) { SYSLOG("UserPatch", "Enabling user-space VDA driver patches (experimental)"); }
     if (this->submitGuardEnabled) { SYSLOG("UserPatch", "Enabling user-space Metal SubmitGuard (free tail filler)"); }
+    if (this->legacyBlendEnabled) { SYSLOG("UserPatch", "Enabling user-space Metal LegacyBlend (dual-quad gate)"); }
 }
 
 void UserPatches::registerGLDriverFix(const PagePatch* const patchTable, const size_t count)
@@ -507,8 +517,8 @@ void UserPatches::registerVDAFix(const PagePatch* const patchTable, const size_t
 
 void UserPatches::processPatcher(KernelPatcher& patcher)
 {
-    if (this->submitGuardEnabled) {
-        this->installSubmitGuard(patcher);
+    if (this->submitGuardEnabled || this->legacyBlendEnabled) {
+        this->installSharedRegionHook(patcher);
     }
 
     if (!this->enabled && !this->vdaEnabled) {
@@ -1027,21 +1037,15 @@ int UserPatches::wrapSharedRegionCheck(proc_t process, void* args, int* returnVa
 {
     auto& patches = singleton();
     const auto result = FunctionCast(wrapSharedRegionCheck, patches.orgSharedRegionCheck)(process, args, returnValue);
-    if (result == 0 && patches.submitGuardEnabled && args != nullptr) {
-        patches.applySubmitGuard(process, args);
+    if (result == 0 && args != nullptr && (patches.submitGuardEnabled || patches.legacyBlendEnabled)) {
+        patches.applyUserSpaceFixes(process, args);
     }
     return result;
 }
 
-void UserPatches::applySubmitGuard(proc_t process, void* rawArgs)
+void UserPatches::applyUserSpaceFixes(proc_t process, void* rawArgs)
 {
     if (getTaskMapFunc == nullptr || copyInFunc == nullptr || copyOutFunc == nullptr) {
-        return;
-    }
-
-    const auto kernelMajor = currentKernelVersion().major();
-    const auto methodOffset = UserSubmitGuardData::getMethodOffset(kernelMajor);
-    if (methodOffset == 0) {
         return;
     }
 
@@ -1059,6 +1063,22 @@ void UserPatches::applySubmitGuard(proc_t process, void* rawArgs)
                 base = userBase;
             }
         }
+    }
+
+    if (this->submitGuardEnabled) { this->applySubmitGuard(map, base, process); }
+    if (this->legacyBlendEnabled) { this->applyLegacyBlend(map, base, process); }
+}
+
+void UserPatches::applySubmitGuard(vm_map_t map, mach_vm_offset_t base, proc_t process)
+{
+    if (getTaskMapFunc == nullptr || copyInFunc == nullptr || copyOutFunc == nullptr) {
+        return;
+    }
+
+    const auto kernelMajor = currentKernelVersion().major();
+    const auto methodOffset = UserSubmitGuardData::getMethodOffset(kernelMajor);
+    if (methodOffset == 0) {
+        return;
     }
 
     const auto method = base + methodOffset;
@@ -1146,9 +1166,6 @@ void UserPatches::applySubmitGuard(proc_t process, void* rawArgs)
             DBGLOG("UserPatch", "SubmitGuard installed in %s (PID %d)", name, pid);
         }
     }
-
-    // Also apply Metal LegacyBlend / dual-quad fix to this dyld shared cache instance
-    this->applyLegacyBlend(map, base, process);
 }
 
 void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t process)
@@ -1212,7 +1229,14 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
         }
     }
 
-    if (!needsGatePatch && !needsAllowPatch) {
+    // Both sites belong to the same analysed build.  Applying only the gate turns the conditional
+    // dual-quad check into an unconditional jump while the DISABLE_DUAL_QUAD force never lands, which is
+    // what black-screens WindowServer on builds the offsets were not derived from (14.8.9 / 23J631).
+    if (!needsGatePatch) {
+        return;
+    }
+    if (allowOffset != 0 && !needsAllowPatch) {
+        NRed::singleton().setProp32("NRedLegacyBlendRejected", 1);
         return;
     }
 
@@ -1260,7 +1284,7 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
     }
 }
 
-bool UserPatches::installSubmitGuard(KernelPatcher& patcher)
+bool UserPatches::installSharedRegionHook(KernelPatcher& patcher)
 {
     const auto kernelMajor = currentKernelVersion().major();
     if (kernelMajor != 23 && kernelMajor != 24 && kernelMajor != 25) {
@@ -1290,11 +1314,16 @@ bool UserPatches::installSubmitGuard(KernelPatcher& patcher)
         return false;
     }
 
-    NRed::singleton().setProp32("NRedSubmitGuardEnabled", 1);
-    NRed::singleton().setProp32("NRedSubmitGuardVersion", 1);
-    NRed::singleton().setProp32("NRedLegacyBlendEnabled", 1);
-    NRed::singleton().setProp32("NRedLegacyBlendVersion", 1);
-    SYSLOG("UserPatch", "SubmitGuard and LegacyBlend enabled for Darwin %u (offset 0x%llX)", kernelMajor,
-           UserSubmitGuardData::getMethodOffset(kernelMajor));
+    if (this->submitGuardEnabled) {
+        NRed::singleton().setProp32("NRedSubmitGuardEnabled", 1);
+        NRed::singleton().setProp32("NRedSubmitGuardVersion", 1);
+        SYSLOG("UserPatch", "SubmitGuard enabled for Darwin %u (offset 0x%llX)", kernelMajor,
+               UserSubmitGuardData::getMethodOffset(kernelMajor));
+    }
+    if (this->legacyBlendEnabled) {
+        NRed::singleton().setProp32("NRedLegacyBlendEnabled", 1);
+        NRed::singleton().setProp32("NRedLegacyBlendVersion", 1);
+        SYSLOG("UserPatch", "LegacyBlend enabled for Darwin %u", kernelMajor);
+    }
     return true;
 }

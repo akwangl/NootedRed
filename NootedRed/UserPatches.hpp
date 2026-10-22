@@ -244,10 +244,12 @@ private:
     auto isPatchedPage(const NativePage& page, const UInt8* data) const -> bool;
 
     bool              submitGuardEnabled{false};
+    bool              legacyBlendEnabled{false};
     mach_vm_address_t orgSharedRegionCheck{0};
 
-    auto installSubmitGuard(KernelPatcher& patcher) -> bool;
-    void applySubmitGuard(proc_t process, void* args);
+    auto installSharedRegionHook(KernelPatcher& patcher) -> bool;
+    void applyUserSpaceFixes(proc_t process, void* args);
+    void applySubmitGuard(vm_map_t map, mach_vm_offset_t base, proc_t process);
     void applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t process);
     static int wrapSharedRegionCheck(proc_t process, void* args, int* returnValue);
 
