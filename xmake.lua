@@ -1,4 +1,13 @@
-includes(path.join(os.getenv("AppleForgePath") or "../AppleForge", "xmake/rules/AppleForge.lua"))
+-- AppleForge is vendored under third_party/ so the build does not depend on git.chefkiss.dev, which
+-- answers CI runners with a Cloudflare challenge.  AppleForgePath still takes precedence when set.
+local function appleforge_dir()
+    local fromEnv = os.getenv("AppleForgePath")
+    if fromEnv and fromEnv ~= "" then return fromEnv end
+    if os.isdir("third_party/AppleForge") then return "third_party/AppleForge" end
+    return "../AppleForge"
+end
+
+includes(path.join(appleforge_dir(), "xmake/rules/AppleForge.lua"))
 
 set_project("NootedRed")
 set_version("1.0.0")
