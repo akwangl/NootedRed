@@ -234,8 +234,8 @@ private:
     auto installUserPatcher() -> bool;
     auto installNativePagePatcher(KernelPatcher& patcher) -> bool;
     auto buildNativePatches() -> bool;
-    void patchNativePage(const void* data, UInt64 pageOffset);
-    void patchSignaturePage(const void* data, UInt64 pageOffset);
+    void patchNativePage(const void* data, UInt64 pageOffset, void* vnode);
+    void patchSignaturePage(const void* data, UInt64 pageOffset, void* vnode);
 
     // Returns true when `data` is an already-patched version of an exact native page.  This is the normal
     // state for a page after the first process validated it: the kernel keeps the patched bytes, so a later
