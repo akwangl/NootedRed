@@ -17,10 +17,13 @@ jobs:
       contents: write
       discussions: write
     env:
-      AppleForgePath: ${{ github.workspace }}/AppleForge
+      AppleForgePath: ${{ github.workspace }}/third_party/AppleForge
     steps:
       - uses: actions/checkout@v7
-      - run: git clone --recurse-submodules https://git.chefkiss.dev/AppleHax/AppleForge.git
+      - name: Fetch AppleForge dependencies
+        run: |
+          git clone --depth 1 https://github.com/acidanthera/Lilu third_party/AppleForge/Lilu
+          git clone --depth 1 https://github.com/acidanthera/MacKernelSDK third_party/AppleForge/MacKernelSDK
       - run: brew install xmake
       - run: xmake f -m debug -y && xmake -y
       - run: xmake f -m releasedbg -y && xmake -y
