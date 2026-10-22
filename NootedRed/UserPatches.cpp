@@ -930,6 +930,25 @@ void UserPatches::patchNativePage(const void* const data, const UInt64 pageOffse
 {
     if (data == nullptr) { return; }
 
+    // Gate 0: Vnode verification.
+    // Ensure the page strictly belongs to supported graphics/media drivers or the dyld shared cache.
+    // Random user applications or system daemons (such as NotificationCenter) are discarded immediately.
+    if (vnode != nullptr) {
+        const char* const vnodeName = vnode_getname(reinterpret_cast<vnode_t>(vnode));
+        if (vnodeName != nullptr) {
+            const bool isGLDriver = (strstr(vnodeName, "AMDRadeonX5000GLDriver") != nullptr);
+            const bool isVADriver = (strstr(vnodeName, "AMDRadeonVADriver") != nullptr);
+            const bool isAppleGVA = (strstr(vnodeName, "AppleGVA") != nullptr);
+            const bool isSharedCache = (strstr(vnodeName, "dyld_shared_cache") != nullptr) ||
+                                       (strstr(vnodeName, "dyld") != nullptr);
+            vnode_putname(vnodeName);
+
+            if (!isGLDriver && !isVADriver && !isAppleGVA && !isSharedCache) {
+                return;
+            }
+        }
+    }
+
     // Test mode: bypass the safe exact-page path and exercise the resolver.  It is intentionally separated
     // by a boot argument so it cannot be enabled by accident.
     if (this->resolverOnly) {
@@ -995,70 +1014,8 @@ void UserPatches::patchNativePage(const void* const data, const UInt64 pageOffse
     // The page may already contain our replacement bytes from an earlier validation (the page cache is
     // shared).  Do not rescan it with the resolver; that would only produce false "signature not found"
     // errors and unnecessary work.
-    // A page that matches every individual patch site but not the whole stored image means the table was
-    // built from a different (or polluted) build of the driver: the patch is silently skipped and the
-    // failure only surfaces indirectly (e.g. VideoToolbox falling back to software).  Log it once per
-    // declared page.  All sites must match, otherwise an unrelated page with colliding bytes at one site
-    // would trip the one-shot flag and suppress the diagnostic for the real target page.
-    // The memcmp stays in bounds by construction: buildNativePatches() rejects null find/zero or oversized
-    // sites and only registers offsets found by scanning with `offset + size <= kPageSize`, and `data`
-    // always addresses a full page here.
     for (size_t pageIndex = 0; pageIndex < this->nativePageCount; pageIndex++) {
-        auto& page = this->nativePages[pageIndex];
-        if (page.siteCount == 0 || page.mismatchLogged) { continue; }
-        bool allSitesMatch = true;
-        for (size_t siteIndex = 0; siteIndex < page.siteCount; siteIndex++) {
-            const auto& site = page.sites[siteIndex];
-            // Defensive re-validation of the registration-time invariants (see above): reject any site
-            // that could not be compared safely even if a future registration path bypassed the checks.
-            if (site.find == nullptr || site.size == 0 || site.size > kPageSize
-                || site.offset > kPageSize - site.size)
-            {
-                allSitesMatch = false;
-                break;
-            }
-            if (memcmp(static_cast<const UInt8*>(data) + site.offset, site.find, site.size) != 0) {
-                allSitesMatch = false;
-                break;
-            }
-        }
-        if (!allSitesMatch) { continue; }
-
-        if (page.vda && !VCNBridge::singleton().loadReady()) {
-            DBGLOG("UserPatch", "VDA page site-matched but the VCN bridge is not ready; leaving it unpatched");
-            continue;
-        }
-
-        if (page.vda && isFairPlayClient(current_task())) {
-            DBGLOG("UserPatch", "Skipping VDA patches for FairPlay client task (site fallback)");
-            continue;
-        }
-
-        if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
-            SYSLOG("UserPatch", "Failed to disable kernel write protection for site fallback");
-            return;
-        }
-
-        for (size_t siteIndex = 0; siteIndex < page.siteCount; siteIndex++) {
-            const auto& site = page.sites[siteIndex];
-            memcpy(const_cast<UInt8*>(static_cast<const UInt8*>(data)) + site.offset, site.replace, site.size);
-        }
-
-        if (MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
-            SYSLOG("UserPatch", "Failed to restore kernel write protection for site fallback");
-        }
-
-        page.mismatchLogged = true;
-        SYSLOG("UserPatch",
-               "Page %zu: stored page image differed, but all %zu patch site(s) matched; site-patched successfully",
-               pageIndex, page.siteCount);
-
-        if (page.vda) {
-            const auto applied = static_cast<UInt32>(OSIncrementAtomic(&this->vdaAppliedCount) + 1);
-            NRed::singleton().setProp32("NRedVCNUserApplied", applied);
-        }
-
-        return;
+        if (this->isPatchedPage(this->nativePages[pageIndex], static_cast<const UInt8*>(data))) { return; }
     }
 
     this->patchSignaturePage(data, pageOffset, vnode);
