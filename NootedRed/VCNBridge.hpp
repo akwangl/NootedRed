@@ -76,6 +76,16 @@ class VCNBridge
     mach_vm_address_t disableGfxOff5000{0};
     mach_vm_address_t enableGfxOff5000{0};
 
+    // Teardown drain.  Apple's VA driver releases a decode buffer as soon as the last submission is queued,
+    // so a VCN read that is still in flight can hit an unmapped page, wedge channel 12 and take the whole GPU
+    // down through the reset/watchdog path.  The client and accelerator stop paths therefore wait, bounded,
+    // for the bridged engine to report idle before teardown is allowed to continue.
+    mach_vm_address_t vcnIsIdle{0};
+    mach_vm_address_t vcnWaitForIdle{0};
+    void*             vcnEngine{nullptr};
+    bool              noDrain{false};
+    bool              drainDisabled{false};
+
     OSMetaClass* engineMC{nullptr};
     OSMetaClass* sharedMC{nullptr};
     OSMetaClass* clientMC{nullptr};
@@ -121,5 +131,6 @@ private:
     static bool          initHardware(void* self, UInt32 channel);
     static void          noopEnableGfxOff(void* self);
     void                 holdGfxOff();
+    void                 drainVCN(const char* reason);
     static OSMetaClassBase* safeMetaCast(const OSMetaClassBase* object, const OSMetaClass* target);
 };
