@@ -84,7 +84,10 @@ class VCNBridge
     mach_vm_address_t vcnWaitForIdle{0};
     void*             vcnEngine{nullptr};
     bool              noDrain{false};
-    bool              drainDisabled{false};
+    UInt32            drainCount{0};
+    UInt32            drainTimeouts{0};
+    UInt32            lastWaitMs{0};
+    UInt32            maxWaitMs{0};
 
     OSMetaClass* engineMC{nullptr};
     OSMetaClass* sharedMC{nullptr};

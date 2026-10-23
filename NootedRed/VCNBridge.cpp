@@ -229,8 +229,6 @@ void VCNBridge::init()
         NRed::singleton().setProp32("NRedVCNNoGfxOff", 1);
         SYSLOG("VCN", "VCN GFXOFF hold requested; X5000 enableGfxOff will be ignored");
     }
-    // Build marker so the running kext can be identified from ioreg without the unified log.
-    NRed::singleton().setProp32("NRedVCNDrainBuild", 1);
     this->noDrain = this->requested && checkKernelArgument(kBootArgNoDrain);
     if (this->noDrain) {
         NRed::singleton().setProp32("NRedVCNNoDrain", 1);
@@ -290,6 +288,9 @@ bool VCNBridge::acceleratorStart(void* const self, IOService* const provider)
 {
     auto& bridge = singleton();
     if (bridge.requested) {
+        // Build marker.  It cannot live in init(): that runs at kext load, before NRed::iGPU is set, and
+        // setProp32() is a no-op while iGPU is null, so the marker never reached the registry.
+        NRed::singleton().setProp32("NRedVCNDrainBuild", 2);
         NRed::singleton().setProp32("NRedVCNAccelStartSeen", 1);
         if (bridge.noGfxOff) { NRed::singleton().setProp32("NRedVCNNoGfxOff", 1); }
         publishStage(5);
@@ -329,6 +330,13 @@ bool VCNBridge::acceleratorStart(void* const self, IOService* const provider)
     const auto result = FunctionCast(acceleratorStart, bridge.orgAcceleratorStart)(self, provider);
     if (result) { publishStage(10); }
     NRed::singleton().setProp32("NRedVCNAcceleratorStarted", static_cast<UInt32>(result));
+
+    // Nothing has been submitted to the VCN engine at this point, so the idle query must report idle.  A
+    // false result means the query cannot be trusted and the teardown drain is only buying time.
+    if (result && bridge.vcnIsIdle != 0 && bridge.vcnEngine != nullptr) {
+        const auto isIdle = reinterpret_cast<bool (*)(void*)>(bridge.vcnIsIdle);
+        NRed::singleton().setProp32("NRedVCNIdleAtStart", isIdle(bridge.vcnEngine) ? 1 : 0);
+    }
     if (!result) {
         bridge.loadCompleted   = false;
         bridge.engineAllocated = false;
@@ -457,32 +465,48 @@ void VCNBridge::drainVCN(const char* const reason)
 {
     auto& bridge = singleton();
 
-    if (!bridge.engineEnabled() || bridge.vcnEngine == nullptr || bridge.noDrain || bridge.drainDisabled) {
-        return;
-    }
+    if (!bridge.engineEnabled() || bridge.vcnEngine == nullptr || bridge.noDrain) { return; }
 
     // Poll the engine's own idle query so a wedged channel can never stall teardown for longer than the
-    // bound; the driver's waitForIdle is only used when the idle query is unavailable.
+    // bound; the driver's waitForIdle is only used when the idle query is unavailable.  Every teardown is
+    // waited on: a timeout is recorded, never used to switch the drain off, so a bad first teardown cannot
+    // leave every later one unprotected.
+    UInt32 waited = 0;
+    bool   idle   = false;
+
     if (bridge.vcnIsIdle != 0) {
         const auto isIdle = reinterpret_cast<bool (*)(void*)>(bridge.vcnIsIdle);
-        for (UInt32 waited = 0; waited <= kDrainTimeoutMs; waited += kDrainStepMs) {
-            if (isIdle(bridge.vcnEngine)) { return; }
+        for (; waited <= kDrainTimeoutMs; waited += kDrainStepMs) {
+            if (isIdle(bridge.vcnEngine)) {
+                idle = true;
+                break;
+            }
             IOSleep(kDrainStepMs);
         }
     }
     else if (bridge.vcnWaitForIdle != 0) {
+        // The driver's own wait is self-bounding; it cannot tell us whether it actually drained.
         reinterpret_cast<void (*)(void*, UInt32)>(bridge.vcnWaitForIdle)(bridge.vcnEngine, kDrainTimeoutMs);
-        return;
+        waited = kDrainTimeoutMs;
+        idle   = true;
     }
     else {
         return;
     }
 
-    // The engine never reported idle inside the bound.  Stop paying the wait on every later teardown and
-    // record it so the next boot can be diagnosed from ioreg without the unified log.
-    bridge.drainDisabled = true;
-    NRed::singleton().setProp32("NRedVCNIdleTimeout", 1);
-    SYSLOG("VCN", "VCN engine still busy after %u ms at %s; teardown continues", kDrainTimeoutMs, reason);
+    ++bridge.drainCount;
+    bridge.lastWaitMs = waited;
+    if (waited > bridge.maxWaitMs) { bridge.maxWaitMs = waited; }
+    NRed::singleton().setProp32("NRedVCNIdleWaitedMs", waited);
+    NRed::singleton().setProp32("NRedVCNIdleWaitedMaxMs", bridge.maxWaitMs);
+    NRed::singleton().setProp32("NRedVCNIdleDrains", bridge.drainCount);
+
+    if (!idle) {
+        ++bridge.drainTimeouts;
+        NRed::singleton().setProp32("NRedVCNIdleTimeout", 1);
+        NRed::singleton().setProp32("NRedVCNIdleTimeouts", bridge.drainTimeouts);
+        SYSLOG("VCN", "VCN engine still busy after %u ms at %s; teardown continues", waited, reason);
+    }
 }
 
 void VCNBridge::signalWork(void* const hardware)
