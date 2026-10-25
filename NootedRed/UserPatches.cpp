@@ -1226,8 +1226,17 @@ void UserPatches::applySubmitGuard(proc_t process, void* rawArgs)
 
     // Restore protections: first current, then maximum
     auto restored = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
+    if (restored != KERN_SUCCESS) {
+        restored = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
+    }
     if (restored == KERN_SUCCESS) {
-        vm_protect(map, methodPage, PAGE_SIZE, TRUE, protection);
+        const auto maxRestored = vm_protect(map, methodPage, PAGE_SIZE, TRUE, protection);
+        if (maxRestored != KERN_SUCCESS) {
+            restored = maxRestored;
+            SYSLOG("UserPatch", "Failed to restore maximum protection for submit method page (0x%X)", maxRestored);
+        }
+    } else {
+        SYSLOG("UserPatch", "Failed to restore current protection for submit method page (0x%X)", restored);
     }
 
     if (written == 0 && restored == KERN_SUCCESS) {
@@ -1475,7 +1484,10 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
     }
     if (allowPage != 0 && allowPage != gatePage) {
         if (vm_protect(map, allowPage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
-            vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+            auto rollback = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+            if (rollback == KERN_SUCCESS) {
+                vm_protect(map, gatePage, PAGE_SIZE, TRUE, gateProt);
+            }
             return;
         }
     }
@@ -1493,17 +1505,37 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
     }
 
     auto restoredGate = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
-    if (restoredGate == KERN_SUCCESS) {
-        vm_protect(map, gatePage, PAGE_SIZE, TRUE, gateProt);
+    if (restoredGate != KERN_SUCCESS) {
+        restoredGate = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
     }
+    if (restoredGate == KERN_SUCCESS) {
+        const auto maxGate = vm_protect(map, gatePage, PAGE_SIZE, TRUE, gateProt);
+        if (maxGate != KERN_SUCCESS) {
+            restoredGate = maxGate;
+            SYSLOG("UserPatch", "Failed to restore maximum protection for gate page (0x%X)", maxGate);
+        }
+    } else {
+        SYSLOG("UserPatch", "Failed to restore current protection for gate page (0x%X)", restoredGate);
+    }
+
+    kern_return_t restoredAllow = KERN_SUCCESS;
     if (allowPage != 0 && allowPage != gatePage) {
-        auto restoredAllow = vm_protect(map, allowPage, PAGE_SIZE, FALSE, allowProt);
+        restoredAllow = vm_protect(map, allowPage, PAGE_SIZE, FALSE, allowProt);
+        if (restoredAllow != KERN_SUCCESS) {
+            restoredAllow = vm_protect(map, allowPage, PAGE_SIZE, FALSE, allowProt);
+        }
         if (restoredAllow == KERN_SUCCESS) {
-            vm_protect(map, allowPage, PAGE_SIZE, TRUE, allowProt);
+            const auto maxAllow = vm_protect(map, allowPage, PAGE_SIZE, TRUE, allowProt);
+            if (maxAllow != KERN_SUCCESS) {
+                restoredAllow = maxAllow;
+                SYSLOG("UserPatch", "Failed to restore maximum protection for allow page (0x%X)", maxAllow);
+            }
+        } else {
+            SYSLOG("UserPatch", "Failed to restore current protection for allow page (0x%X)", restoredAllow);
         }
     }
 
-    if (writeErr == 0 && restoredGate == KERN_SUCCESS) {
+    if (writeErr == 0 && restoredGate == KERN_SUCCESS && restoredAllow == KERN_SUCCESS) {
         static volatile UInt32 blendCounter{0};
         const auto count = static_cast<UInt32>(OSIncrementAtomic(&blendCounter) + 1);
         NRed::singleton().setProp32("NRedLegacyBlendApplied", count);
