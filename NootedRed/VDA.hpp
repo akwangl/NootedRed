@@ -32,11 +32,12 @@ class VDA
     bool requested{false};
     bool avcOnly{false};
     bool hevcEncodeAllowed{false};
+    bool hevc10Allowed{false};
 
 public:
     static VDA& singleton();
 
-    // Parses the -NRedVDA, -NRedAVC and -NRedAVCEncode boot arguments.  Called from `NRed::init()`, before the device is known.
+    // Parses the -NRedVDA, -NRedAVC, -NRedAVCEncode and -NRedHEVC10 boot arguments.  Called from `NRed::init()`, before the device is known.
     void init();
 
     // Resolves the running device profile and logs the media policy.  Called from `NRed::processPatcher()`
@@ -51,4 +52,7 @@ public:
 
     // True when HEVC hardware encode is allowed (-NRedVDA or -NRedAVCEncode).
     bool isHEVCEncodeAllowed() const { return this->hevcEncodeAllowed; }
+
+    // True when HEVC 10-bit (Profile 2 / Main 10) hardware decode is explicitly enabled (-NRedHEVC10).
+    bool isHEVC10Allowed() const { return this->hevc10Allowed; }
 };

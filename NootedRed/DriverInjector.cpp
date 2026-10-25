@@ -28,6 +28,7 @@
 #include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSObject.h>
 #include <libkern/c++/OSString.h>
 
@@ -94,23 +95,67 @@ bool DriverInjector::wrapAddDrivers(void* const self, OSArray* const array, cons
 
             DBGLOG("DriverInjector", "Matched %s, injecting.", driver.identifier);
 
-            if (VDA::singleton().isAVCOnly() && strcmp(driver.identifier, "com.apple.kext.AMDRadeonX5000") == 0) {
+            if (strcmp(driver.identifier, "com.apple.kext.AMDRadeonX5000") == 0) {
                 const auto count = driver.personalities->getCount();
-                for (UInt32 i = 0; i < count; ++i) {
-                    auto* const pDict = OSDynamicCast(OSDictionary, driver.personalities->getObject(i));
-                    if (pDict != nullptr) {
-                        pDict->removeObject("IOGVAHEVCDecode");
-                        pDict->removeObject("IOGVAHEVCDecodeCapabilities");
-                        if (!VDA::singleton().isHEVCEncodeAllowed()) {
-                            pDict->removeObject("IOGVAHEVCEncode");
-                            pDict->removeObject("IOGVAHEVCEncodeCapabilities");
+                if (VDA::singleton().isAVCOnly()) {
+                    for (UInt32 i = 0; i < count; ++i) {
+                        auto* const pDict = OSDynamicCast(OSDictionary, driver.personalities->getObject(i));
+                        if (pDict != nullptr) {
+                            pDict->removeObject("IOGVAHEVCDecode");
+                            pDict->removeObject("IOGVAHEVCDecodeCapabilities");
+                            if (!VDA::singleton().isHEVCEncodeAllowed()) {
+                                pDict->removeObject("IOGVAHEVCEncode");
+                                pDict->removeObject("IOGVAHEVCEncodeCapabilities");
+                            }
                         }
                     }
+                    if (VDA::singleton().isHEVCEncodeAllowed()) {
+                        DBGLOG("DriverInjector", "-NRedAVCEncode active: stripped HEVC decode, preserved HEVC encode for %s", driver.identifier);
+                    } else {
+                        DBGLOG("DriverInjector", "-NRedAVC active: stripped HEVC decode/encode capabilities from %s", driver.identifier);
+                    }
                 }
-                if (VDA::singleton().isHEVCEncodeAllowed()) {
-                    DBGLOG("DriverInjector", "-NRedAVCEncode active: stripped HEVC decode, preserved HEVC encode for %s", driver.identifier);
-                } else {
-                    DBGLOG("DriverInjector", "-NRedAVC active: stripped HEVC decode/encode capabilities from %s", driver.identifier);
+                else if (!VDA::singleton().isHEVC10Allowed()) {
+                    // Restrict HEVC hardware decode for Profile 2 (Main 10 / 10-bit HDR) by setting its
+                    // VTMaxDecodeLevel to 0. When VideoToolbox checks the per-profile details, it sees
+                    // VTMaxDecodeLevel = 0, determines that the hardware decoder cannot satisfy the video stream's level,
+                    // and gracefully falls back to AppleSoftwareVideoDecoder (CPU software decoding).
+                    // This prevents VCN 2.2 ASIC lockups while preserving hardware decode for standard 8-bit HEVC and H.264.
+                    for (UInt32 i = 0; i < count; ++i) {
+                        auto* const pDict = OSDynamicCast(OSDictionary, driver.personalities->getObject(i));
+                        if (pDict == nullptr) { continue; }
+
+                        auto* const hevcCaps = OSDynamicCast(OSDictionary, pDict->getObject("IOGVAHEVCDecodeCapabilities"));
+                        if (hevcCaps == nullptr) { continue; }
+
+                        auto* const details = OSDynamicCast(OSDictionary, hevcCaps->getObject("VTPerProfileDetails"));
+                        if (details != nullptr) {
+                            auto* const p2Dict = OSDynamicCast(OSDictionary, details->getObject("2"));
+                            if (p2Dict != nullptr) {
+                                auto* const zeroNum = OSNumber::withNumber(static_cast<unsigned long long>(0), 32);
+                                if (zeroNum != nullptr) {
+                                    p2Dict->setObject("VTMaxDecodeLevel", zeroNum);
+                                    zeroNum->release();
+                                }
+                            }
+                        }
+                    }
+
+                    auto* const hevcCapsInDict = OSDynamicCast(OSDictionary, dict->getObject("IOGVAHEVCDecodeCapabilities"));
+                    if (hevcCapsInDict != nullptr) {
+                        auto* const details = OSDynamicCast(OSDictionary, hevcCapsInDict->getObject("VTPerProfileDetails"));
+                        if (details != nullptr) {
+                            auto* const p2Dict = OSDynamicCast(OSDictionary, details->getObject("2"));
+                            if (p2Dict != nullptr) {
+                                auto* const zeroNum = OSNumber::withNumber(static_cast<unsigned long long>(0), 32);
+                                if (zeroNum != nullptr) {
+                                    p2Dict->setObject("VTMaxDecodeLevel", zeroNum);
+                                    zeroNum->release();
+                                }
+                            }
+                        }
+                    }
+                    DBGLOG("DriverInjector", "Protected HEVC decode: capped Profile 2 (Main 10) VTMaxDecodeLevel to 0 to guard against VCN2 hardware hang (pass -NRedHEVC10 to override)");
                 }
             }
 
