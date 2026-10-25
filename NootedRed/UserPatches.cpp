@@ -61,6 +61,9 @@ namespace
     const char* const kBootArgAVC              = "-NRedAVC";
     const char* const kBootArgAVCEncode        = "-NRedAVCEncode";
     const char* const kBootArgNoSubmitGuard    = "-NRedNoSubmitGuard";
+    const char* const kBootArgSubmitGuard      = "-NRedSubmitGuard";
+    const char* const kBootArgNoLegacyBlend    = "-NRedNoLegacyBlend";
+    const char* const kBootArgLegacyBlend      = "-NRedLegacyBlend";
 
     struct SharedRegionCheckArgs
     {
@@ -166,6 +169,7 @@ namespace
     static const UInt8 kMTLAllowFind_Tahoe[]    = {0x0F, 0x94, 0xC1};
     static const UInt8 kMTLAllowReplace_Tahoe[] = {0x31, 0xC9, 0x90};
 
+    #include "UserPatchesVentura.inc"
     #include "UserPatchesSonoma.inc"
     #include "UserPatchesSequoia.inc"
     #include "UserPatchesTahoe.inc"
@@ -173,6 +177,10 @@ namespace
     static const UInt8 kResolverMask32[] = {
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    };
+    static const UInt8 kResolverMask32_RipMasked[] = {
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF,
     };
 
     // macOS 14 (Sonoma) resolver contexts.
@@ -272,6 +280,48 @@ namespace
     };
     constexpr size_t kResolverSignatureCount_Tahoe = arrsize(kResolverSignatures_Tahoe);
 
+    // macOS 13 (Ventura) resolver contexts.
+    static const UInt8 kResolverHwCtx_Ventura[] = {
+        0xAC, 0x00, 0x00, 0x00, 0x41, 0x83, 0xF9, 0x13, 0x77, 0x4D, 0xC7, 0x07, 0x8D, 0x00, 0x00, 0x00,
+        0xC7, 0x47, 0x78, 0x04, 0x00, 0x00, 0x00, 0xC5, 0xF8, 0x28, 0x05, 0x06, 0x0B, 0x0F, 0x00, 0xC5,
+    };
+    static const UInt8 kResolverDualCtx_Ventura[] = {
+        0x88, 0xA0, 0x00, 0x00, 0x00, 0xD1, 0xE9, 0x83, 0xE1, 0x01, 0x8B, 0x83, 0x98, 0x13, 0x00, 0x00,
+        0x83, 0xE0, 0xFE, 0x09, 0xC8, 0x89, 0x83, 0x98, 0x13, 0x00, 0x00, 0x48, 0x8B, 0x8B, 0x68, 0x0D,
+    };
+    static const UInt8 kResolverGateCtx_Ventura[] = {
+        0xFF, 0xFF, 0x48, 0x8B, 0x85, 0x40, 0xFE, 0xFF, 0xFF, 0xF6, 0x80, 0xA0, 0x00, 0x00, 0x00, 0x02,
+        0x75, 0x0B, 0x31, 0xC0, 0x4C, 0x8B, 0xA5, 0x70, 0xFE, 0xFF, 0xFF, 0xEB, 0x24, 0x80, 0xBD, 0x80,
+    };
+    static const UInt8 kResolverAllowCtx_Ventura[] = {
+        0xFF, 0xFF, 0x48, 0x8B, 0x85, 0x60, 0xFE, 0xFF, 0xFF, 0x49, 0x0F, 0xBA, 0x64, 0x04, 0x08, 0x22,
+        0x0F, 0x93, 0xC0, 0x08, 0xC8, 0x4C, 0x8B, 0xB5, 0x50, 0xFE, 0xFF, 0xFF, 0x4C, 0x8B, 0x8D, 0x68,
+    };
+
+    static const UserPatches::SignaturePatch kResolverSignatures_Ventura[] = {
+        {kResolverHwCtx_Ventura, kResolverMask32_RipMasked, sizeof(kResolverHwCtx_Ventura), 16, kGLDriverHwInfoReplace,
+         sizeof(kGLDriverHwInfoReplace), 0, 1, 0xE000},
+        {kResolverDualCtx_Ventura, kResolverMask32, sizeof(kResolverDualCtx_Ventura), 16, kGLDriverDualQuadReplace,
+         sizeof(kGLDriverDualQuadReplace), 0, 1, 0x8000},
+        {kResolverGateCtx_Ventura, kResolverMask32, sizeof(kResolverGateCtx_Ventura), 16, kMTLGateReplace,
+         sizeof(kMTLGateReplace), 0, 1, ~static_cast<UInt64>(0)},
+        {kResolverAllowCtx_Ventura, kResolverMask32, sizeof(kResolverAllowCtx_Ventura), 16, kMTLAllowReplace_Sonoma,
+         sizeof(kMTLAllowReplace_Sonoma), 0, 1, ~static_cast<UInt64>(0)},
+    };
+    constexpr size_t kResolverSignatureCount_Ventura = arrsize(kResolverSignatures_Ventura);
+
+    static const UserPatches::PagePatch kGLDriverPatches_Ventura[] = {
+        {UserPatcher::FileSegment::SegmentTextText, kGLDriverHwInfoPage_Ventura,    kGLDriverHwInfoFind,
+         kGLDriverHwInfoReplace,                    sizeof(kGLDriverHwInfoFind),   0, 1},
+        {UserPatcher::FileSegment::SegmentTextText, kGLDriverDualQuadPage_Ventura,  kGLDriverDualQuadFind,
+         kGLDriverDualQuadReplace,                  sizeof(kGLDriverDualQuadFind), 1, 1},
+        {UserPatcher::FileSegment::SegmentTextText, kMTLControlPage_Ventura,        kMTLGateFind,
+         kMTLGateReplace,                           sizeof(kMTLGateFind),          0, 1},
+        {UserPatcher::FileSegment::SegmentTextText, kMTLControlPage_Ventura,        kMTLAllowFind_Sonoma,
+         kMTLAllowReplace_Sonoma,                   sizeof(kMTLAllowFind_Sonoma),  0, 1},
+    };
+    constexpr size_t kGLDriverPatchCount_Ventura = arrsize(kGLDriverPatches_Ventura);
+
     static const UserPatches::PagePatch kGLDriverPatches_Sonoma[] = {
         {UserPatcher::FileSegment::SegmentTextText, kGLDriverHwInfoPage_Sonoma,    kGLDriverHwInfoFind,
          kGLDriverHwInfoReplace,                    sizeof(kGLDriverHwInfoFind),   0, 1},
@@ -353,6 +403,10 @@ namespace
         {"14.x / Sonoma gfx9 APU", PenguinWizardry::KernelVersion(23, 0), PenguinWizardry::KernelVersion(23, 99),
          UserPatches::kApuAll, kGLDriverPatches_Sonoma, kGLDriverPatchCount_Sonoma,
          kResolverSignatures_Sonoma, kResolverSignatureCount_Sonoma},
+        // macOS 13.x (Ventura) fallback.
+        {"13.x / Ventura gfx9 APU", PenguinWizardry::KernelVersion(22, 0), PenguinWizardry::KernelVersion(22, 99),
+         UserPatches::kApuAll, kGLDriverPatches_Ventura, kGLDriverPatchCount_Ventura,
+         kResolverSignatures_Ventura, kResolverSignatureCount_Ventura},
     };
     constexpr size_t kGLDriverPatchSetCount = sizeof(kGLDriverPatchSets) / sizeof(kGLDriverPatchSets[0]);
 
@@ -382,9 +436,10 @@ void UserPatches::init()
                        || checkKernelArgument(kBootArgAVC)
                        || checkKernelArgument(kBootArgAVCEncode);
 
-    this->submitGuardEnabled = !checkKernelArgument(kBootArgNoSubmitGuard);
+    this->submitGuardEnabled = checkKernelArgument(kBootArgSubmitGuard) || !checkKernelArgument(kBootArgNoSubmitGuard);
+    this->legacyBlendEnabled = checkKernelArgument(kBootArgLegacyBlend) || !checkKernelArgument(kBootArgNoLegacyBlend);
 
-    if (!this->enabled && !this->vdaEnabled && !this->submitGuardEnabled) {
+    if (!this->enabled && !this->vdaEnabled && !this->submitGuardEnabled && !this->legacyBlendEnabled) {
         DBGLOG("UserPatch", "User-space driver patches are disabled");
         return;
     }
@@ -397,6 +452,7 @@ void UserPatches::init()
     }
     if (this->vdaEnabled) { SYSLOG("UserPatch", "Enabling user-space VDA driver patches (experimental)"); }
     if (this->submitGuardEnabled) { SYSLOG("UserPatch", "Enabling user-space Metal SubmitGuard (free tail filler)"); }
+    if (this->legacyBlendEnabled) { SYSLOG("UserPatch", "Enabling user-space Metal LegacyBlend (dual-quad fix)"); }
 }
 
 void UserPatches::registerGLDriverFix(const PagePatch* const patchTable, const size_t count)
@@ -484,12 +540,19 @@ void UserPatches::selectPatchSet()
         this->signatures     = kResolverSignatures;
         this->signatureCount = kResolverSignatureCount;
         for (auto& applied : this->signatureApplied) { applied = 0; }
-    } else {
+    } else if (getKernelVersion() >= KernelVersion::Sonoma) {
         SYSLOG("UserPatch", "Fallback: selecting macOS 14 (Sonoma) GL/Metal patch set");
         this->patches        = kGLDriverPatches_Sonoma;
         this->patchCount     = kGLDriverPatchCount_Sonoma;
         this->signatures     = kResolverSignatures_Sonoma;
         this->signatureCount = kResolverSignatureCount_Sonoma;
+        for (auto& applied : this->signatureApplied) { applied = 0; }
+    } else {
+        SYSLOG("UserPatch", "Fallback: selecting macOS 13 (Ventura) GL/Metal patch set");
+        this->patches        = kGLDriverPatches_Ventura;
+        this->patchCount     = kGLDriverPatchCount_Ventura;
+        this->signatures     = kResolverSignatures_Ventura;
+        this->signatureCount = kResolverSignatureCount_Ventura;
         for (auto& applied : this->signatureApplied) { applied = 0; }
     }
 }
@@ -508,7 +571,7 @@ void UserPatches::registerVDAFix(const PagePatch* const patchTable, const size_t
 
 void UserPatches::processPatcher(KernelPatcher& patcher)
 {
-    if (this->submitGuardEnabled) {
+    if (this->submitGuardEnabled || this->legacyBlendEnabled) {
         this->installSubmitGuard(patcher);
     }
 
@@ -1051,8 +1114,23 @@ int UserPatches::wrapSharedRegionCheck(proc_t process, void* args, int* returnVa
 {
     auto& patches = singleton();
     const auto result = FunctionCast(wrapSharedRegionCheck, patches.orgSharedRegionCheck)(process, args, returnValue);
-    if (result == 0 && patches.submitGuardEnabled && args != nullptr) {
-        patches.applySubmitGuard(process, args);
+    if (result == 0 && args != nullptr) {
+        if (patches.submitGuardEnabled) {
+            patches.applySubmitGuard(process, args);
+        } else if (patches.legacyBlendEnabled) {
+            mach_vm_offset_t base = UserSubmitGuardData::kDyldSharedCacheBase;
+            const auto* rArgs = static_cast<const SharedRegionCheckArgs*>(args);
+            if (rArgs->startAddress != 0 && copyInFunc != nullptr) {
+                mach_vm_offset_t userBase{0};
+                if (copyInFunc(reinterpret_cast<const void*>(rArgs->startAddress), &userBase, sizeof(userBase)) == 0 && userBase != 0) {
+                    base = userBase;
+                }
+            }
+            auto map = getTaskMapFunc ? getTaskMapFunc(current_task()) : nullptr;
+            if (map != nullptr) {
+                patches.applyLegacyBlend(map, base, process);
+            }
+        }
     }
     return result;
 }
@@ -1172,99 +1250,260 @@ void UserPatches::applySubmitGuard(proc_t process, void* rawArgs)
     }
 
     // Also apply Metal LegacyBlend / dual-quad fix to this dyld shared cache instance
-    this->applyLegacyBlend(map, base, process);
+    if (this->legacyBlendEnabled) {
+        this->applyLegacyBlend(map, base, process);
+    }
+}
+
+namespace
+{
+    inline bool isAllowOpcode(UInt8 b0, UInt8 b1, UInt8 b2)
+    {
+        return (b0 == 0x31 && b1 == 0xC0 && b2 == 0x90) ||
+               (b0 == 0x0F && (b1 == 0x93 || b1 == 0x94) && b2 == 0xC0);
+    }
+
+    inline bool isAllowAlreadyPatched(UInt8 b0, UInt8 b1, UInt8 b2)
+    {
+        return (b0 == 0xB0 && b1 == 0x01 && b2 == 0x90);
+    }
 }
 
 void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t process)
 {
-    const auto kernelMajor = currentKernelVersion().major();
-    mach_vm_offset_t gateOffset = 0;
-    mach_vm_offset_t allowOffset = 0;
+    if (!this->legacyBlendEnabled) {
+        return;
+    }
+    if (copyInFunc == nullptr || copyOutFunc == nullptr) {
+        return;
+    }
 
-    if (kernelMajor == 23) {
+    const auto kernelMajor = currentKernelVersion().major();
+    mach_vm_offset_t baseGateOffset = 0;
+    mach_vm_offset_t baseAllowOffset = 0;
+    UInt32 expectedDelta = 0;
+
+    if (kernelMajor == 22) {
+        // macOS 13 Ventura (Darwin 22)
+        baseGateOffset = 0x3000BC24CULL;
+        baseAllowOffset = 0x3000BC278ULL;
+        expectedDelta = 0x2C;
+    } else if (kernelMajor == 23) {
         // macOS 14 Sonoma (Darwin 23)
-        // Gate (75 0B -> EB 0B) at 0x30354D1BCULL
-        // Allow (force DISABLE_DUAL_QUAD = 1: B0 01 90) at 0x30354D1DBULL
-        gateOffset = 0x30354D1BCULL;
-        allowOffset = 0x30354D1DBULL;
+        baseGateOffset = 0x30354D1BCULL;
+        baseAllowOffset = 0x30354D1DBULL;
+        expectedDelta = 0x1F;
     } else if (kernelMajor == 24) {
         // macOS 15 Sequoia (Darwin 24)
-        gateOffset = 0x3087B3164ULL;
-        allowOffset = 0x3087B3198ULL;
+        baseGateOffset = 0x3087B3164ULL;
+        baseAllowOffset = 0x3087B3198ULL;
+        expectedDelta = 0x34;
     } else if (kernelMajor == 25) {
         // macOS 26 Tahoe (Darwin 25)
-        gateOffset = 0x310C77708ULL;
+        baseGateOffset = 0x310C77708ULL;
+        baseAllowOffset = 0;
+        expectedDelta = 0;
     } else {
         return;
     }
 
-    const mach_vm_address_t gateAddr = base + gateOffset;
-    UInt8 gateBytes[2]{};
-    if (copyInFunc(reinterpret_cast<const void*>(gateAddr), gateBytes, sizeof(gateBytes)) != 0) {
-        return;
-    }
-
+    mach_vm_offset_t resolvedGateOffset = 0;
+    mach_vm_offset_t resolvedAllowOffset = 0;
     bool needsGatePatch = false;
-    UInt8 targetGate[2]{0xEB, 0x0B};
-    if (kernelMajor == 23 || kernelMajor == 24) {
-        if (gateBytes[0] == 0x75 && gateBytes[1] == 0x0B) {
-            needsGatePatch = true;
-        } else if (gateBytes[0] == 0xEB && gateBytes[1] == 0x0B) {
-            // Already patched gate
-        } else {
-            return; // Unknown opcode, safely skip
-        }
-    } else if (kernelMajor == 25) {
+    bool needsAllowPatch = false;
+    UInt8 targetGate[2] = {0xEB, 0x0B};
+    UInt8 targetAllow[3] = {0xB0, 0x01, 0x90};
+
+    if (kernelMajor == 25) {
         targetGate[0] = 0xEB; targetGate[1] = 0x00;
-        if (gateBytes[0] == 0x74 && gateBytes[1] == 0x28) {
-            needsGatePatch = true;
-        }
     }
 
-    bool needsAllowPatch = false;
-    UInt8 targetAllow[3] = {0xB0, 0x01, 0x90};
-    mach_vm_address_t allowAddr = 0;
-    if (allowOffset != 0) {
-        allowAddr = base + allowOffset;
-        UInt8 allowBytes[3]{};
-        if (copyInFunc(reinterpret_cast<const void*>(allowAddr), allowBytes, sizeof(allowBytes)) == 0) {
-            if ((allowBytes[0] == 0x31 && allowBytes[1] == 0xC0 && allowBytes[2] == 0x90) ||
-                (allowBytes[0] == 0x0F && allowBytes[1] == 0x93 && allowBytes[2] == 0xC0) ||
-                (allowBytes[0] == 0x0F && allowBytes[1] == 0x94 && allowBytes[2] == 0xC0)) {
-                needsAllowPatch = true;
+    // Step 1: Fast path - test nominal hardcoded offsets first
+    bool fastPathSuccess = false;
+    {
+        UInt8 gateBytes[2]{};
+        if (copyInFunc(reinterpret_cast<const void*>(base + baseGateOffset), gateBytes, sizeof(gateBytes)) == 0) {
+            if (kernelMajor == 22 || kernelMajor == 23 || kernelMajor == 24) {
+                if (gateBytes[0] == 0x75 && gateBytes[1] == 0x0B) {
+                    UInt8 allowBytes[3]{};
+                    if (copyInFunc(reinterpret_cast<const void*>(base + baseAllowOffset), allowBytes, sizeof(allowBytes)) == 0) {
+                        if (isAllowOpcode(allowBytes[0], allowBytes[1], allowBytes[2])) {
+                            resolvedGateOffset = baseGateOffset;
+                            resolvedAllowOffset = baseAllowOffset;
+                            needsGatePatch = true;
+                            needsAllowPatch = true;
+                            fastPathSuccess = true;
+                        }
+                    }
+                } else if (gateBytes[0] == 0xEB && gateBytes[1] == 0x0B) {
+                    UInt8 allowBytes[3]{};
+                    if (copyInFunc(reinterpret_cast<const void*>(base + baseAllowOffset), allowBytes, sizeof(allowBytes)) == 0) {
+                        if (isAllowAlreadyPatched(allowBytes[0], allowBytes[1], allowBytes[2])) {
+                            return; // Already patched in this shared region instance
+                        }
+                    }
+                }
+            } else if (kernelMajor == 25) {
+                if (gateBytes[0] == 0x74 && gateBytes[1] == 0x28) {
+                    resolvedGateOffset = baseGateOffset;
+                    needsGatePatch = true;
+                    fastPathSuccess = true;
+                } else if (gateBytes[0] == 0xEB && gateBytes[1] == 0x00) {
+                    return; // Already patched
+                }
             }
         }
     }
 
-    if (!needsGatePatch && !needsAllowPatch) {
+    // Step 2: Dynamic Window Search (if fast path didn't match nominal offsets, e.g. due to minor build shifts)
+    if (!fastPathSuccess && (kernelMajor == 22 || kernelMajor == 23 || kernelMajor == 24 || kernelMajor == 25)) {
+        constexpr size_t kRadius = 128;
+        // Ensure kScanSize covers [-128, +128] scan window plus maximum delta and instruction length:
+        // 256 + maxDelta (~68) + 3 bytes <= 384 bytes.
+        constexpr size_t kScanSize = 256 + 128; // 384 bytes total
+        UInt8 win[kScanSize]{};
+        const mach_vm_address_t scanBase = base + baseGateOffset - kRadius;
+
+        if (copyInFunc(reinterpret_cast<const void*>(scanBase), win, sizeof(win)) == 0) {
+            size_t matchCount = 0;
+            mach_vm_offset_t matchedGate = 0;
+            mach_vm_offset_t matchedAllow = 0;
+            bool matchedAlreadyPatched = false;
+
+            if (kernelMajor == 22 || kernelMajor == 23 || kernelMajor == 24) {
+                // Search within [-128, +128] of baseGateOffset
+                for (size_t i = 0; i <= 256; ++i) {
+                    const bool isGateCandidate = (win[i] == 0x75 && win[i + 1] == 0x0B);
+                    const bool isPatchedCandidate = (win[i] == 0xEB && win[i + 1] == 0x0B);
+                    if (!isGateCandidate && !isPatchedCandidate) {
+                        continue;
+                    }
+
+                    // Check allow instruction in allowable delta range [expectedDelta - 16, expectedDelta + 16]
+                    const size_t minDelta = (expectedDelta >= 16) ? (expectedDelta - 16) : 0;
+                    const size_t maxDelta = expectedDelta + 16;
+                    for (size_t d = minDelta; d <= maxDelta; ++d) {
+                        const size_t j = i + d;
+                        if (j + 3 > kScanSize) {
+                            break;
+                        }
+                        if (isGateCandidate && isAllowOpcode(win[j], win[j + 1], win[j + 2])) {
+                            matchedGate = (baseGateOffset - kRadius) + i;
+                            matchedAllow = (baseGateOffset - kRadius) + j;
+                            matchCount++;
+                            break;
+                        } else if (isPatchedCandidate && isAllowAlreadyPatched(win[j], win[j + 1], win[j + 2])) {
+                            matchedAlreadyPatched = true;
+                            matchCount++;
+                            break;
+                        }
+                    }
+                }
+            } else if (kernelMajor == 25) {
+                // macOS 26 Tahoe: single gate patch (74 28 -> EB 00), no allow site
+                for (size_t i = 0; i <= 256; ++i) {
+                    if (win[i] == 0x74 && win[i + 1] == 0x28) {
+                        matchedGate = (baseGateOffset - kRadius) + i;
+                        matchCount++;
+                    } else if (win[i] == 0xEB && win[i + 1] == 0x00) {
+                        matchedAlreadyPatched = true;
+                        matchCount++;
+                    }
+                }
+            }
+
+            if (matchCount == 1) {
+                if (matchedAlreadyPatched) {
+                    return; // Already safely patched
+                }
+                resolvedGateOffset = matchedGate;
+                resolvedAllowOffset = matchedAllow;
+                needsGatePatch = true;
+                if (resolvedAllowOffset != 0) {
+                    needsAllowPatch = true;
+                }
+                DBGLOG("UserPatch", "LegacyBlend dynamically matched at gate +0x%llX, allow +0x%llX",
+                       resolvedGateOffset, resolvedAllowOffset);
+            } else {
+                // 0 matches or ambiguous (>1 matches). Safely abort without touching dyld cache!
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+
+    // Step 3: Strict "All-or-Nothing" atomic check
+    // If either site is missing or unverified, DO NOT touch the shared region!
+    if (resolvedAllowOffset != 0) {
+        if (!needsGatePatch || !needsAllowPatch) {
+            return;
+        }
+    } else {
+        if (!needsGatePatch) {
+            return;
+        }
+    }
+
+    // Step 4: Page protection & atomic write
+    const mach_vm_address_t gateAddr = base + resolvedGateOffset;
+    const mach_vm_address_t allowAddr = (resolvedAllowOffset != 0) ? (base + resolvedAllowOffset) : 0;
+
+    const mach_vm_address_t gatePage = gateAddr & ~static_cast<mach_vm_address_t>(PAGE_SIZE - 1);
+    const mach_vm_address_t allowPage = (allowAddr != 0) ? (allowAddr & ~static_cast<mach_vm_address_t>(PAGE_SIZE - 1)) : 0;
+
+    vm_prot_t gateProt{VM_PROT_NONE};
+    if (!leafProtection(map, gatePage, gateProt) || gateProt != (VM_PROT_READ | VM_PROT_EXECUTE)) {
         return;
     }
 
-    const mach_vm_address_t pageAddr = gateAddr & ~static_cast<mach_vm_address_t>(PAGE_SIZE - 1);
-    vm_prot_t protection{VM_PROT_NONE};
-    if (!leafProtection(map, pageAddr, protection) || protection != (VM_PROT_READ | VM_PROT_EXECUTE)) {
+    vm_prot_t allowProt{VM_PROT_NONE};
+    if (allowPage != 0 && allowPage != gatePage) {
+        if (!leafProtection(map, allowPage, allowProt) || allowProt != (VM_PROT_READ | VM_PROT_EXECUTE)) {
+            return;
+        }
+    }
+
+    // Backup original gate bytes before writing for rollback on partial failure
+    UInt8 orgGate[2]{};
+    if (copyInFunc(reinterpret_cast<const void*>(gateAddr), orgGate, sizeof(orgGate)) != 0) {
         return;
     }
 
-    auto result = vm_protect(map, pageAddr, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-    if (result != KERN_SUCCESS) {
+    if (vm_protect(map, gatePage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
         return;
+    }
+    if (allowPage != 0 && allowPage != gatePage) {
+        if (vm_protect(map, allowPage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
+            vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+            return;
+        }
     }
 
     int writeErr = 0;
-    if (needsGatePatch) {
-        writeErr |= copyOutFunc(targetGate, reinterpret_cast<void*>(gateAddr), sizeof(targetGate));
-    }
-    if (needsAllowPatch && allowAddr != 0) {
-        writeErr |= copyOutFunc(targetAllow, reinterpret_cast<void*>(allowAddr), sizeof(targetAllow));
+    writeErr = copyOutFunc(targetGate, reinterpret_cast<void*>(gateAddr), sizeof(targetGate));
+    if (writeErr == 0 && allowAddr != 0) {
+        const int allowErr = copyOutFunc(targetAllow, reinterpret_cast<void*>(allowAddr), sizeof(targetAllow));
+        if (allowErr != 0) {
+            // Rollback gate patch to maintain all-or-nothing consistency
+            copyOutFunc(orgGate, reinterpret_cast<void*>(gateAddr), sizeof(orgGate));
+            writeErr = allowErr;
+            SYSLOG("UserPatch", "LegacyBlend allow patch failed (0x%X), rolled back gate patch", allowErr);
+        }
     }
 
-    auto restored = vm_protect(map, pageAddr, PAGE_SIZE, FALSE, protection);
-    if (restored == KERN_SUCCESS) {
-        vm_protect(map, pageAddr, PAGE_SIZE, TRUE, protection);
+    auto restoredGate = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+    if (restoredGate == KERN_SUCCESS) {
+        vm_protect(map, gatePage, PAGE_SIZE, TRUE, gateProt);
+    }
+    if (allowPage != 0 && allowPage != gatePage) {
+        auto restoredAllow = vm_protect(map, allowPage, PAGE_SIZE, FALSE, allowProt);
+        if (restoredAllow == KERN_SUCCESS) {
+            vm_protect(map, allowPage, PAGE_SIZE, TRUE, allowProt);
+        }
     }
 
-    if (writeErr == 0 && restored == KERN_SUCCESS) {
+    if (writeErr == 0 && restoredGate == KERN_SUCCESS) {
         static volatile UInt32 blendCounter{0};
         const auto count = static_cast<UInt32>(OSIncrementAtomic(&blendCounter) + 1);
         NRed::singleton().setProp32("NRedLegacyBlendApplied", count);
@@ -1287,7 +1526,7 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
 bool UserPatches::installSubmitGuard(KernelPatcher& patcher)
 {
     const auto kernelMajor = currentKernelVersion().major();
-    if (kernelMajor != 23 && kernelMajor != 24 && kernelMajor != 25) {
+    if (kernelMajor != 22 && kernelMajor != 23 && kernelMajor != 24 && kernelMajor != 25) {
         DBGLOG("UserPatch", "SubmitGuard not supported on Darwin %u", kernelMajor);
         return false;
     }

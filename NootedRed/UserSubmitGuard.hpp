@@ -16,6 +16,7 @@ namespace UserSubmitGuardData {
     // Derived from AnalysisData on macOS 14, 15, and 26.
     inline constexpr UInt64 kDyldSharedCacheBase = 0x7FF800000000ULL;
 
+    inline constexpr UInt64 kMethodOffsetVentura = 0x3000CC970ULL; // macOS 13.x (Darwin 22.x)
     inline constexpr UInt64 kMethodOffsetSonoma  = 0x30355E210ULL; // macOS 14.x (Darwin 23.x)
     inline constexpr UInt64 kMethodOffsetSequoia = 0x3087C3580ULL; // macOS 15.x (Darwin 24.x)
     inline constexpr UInt64 kMethodOffsetTahoe   = 0x310CE7240ULL; // macOS 26.x (Darwin 25.x)
@@ -60,7 +61,9 @@ namespace UserSubmitGuardData {
 
     inline UInt64 getMethodOffset(const UInt32 kernelMajor)
     {
-        if (kernelMajor == 23) {
+        if (kernelMajor == 22) {
+            return kMethodOffsetVentura;
+        } else if (kernelMajor == 23) {
             return kMethodOffsetSonoma;
         } else if (kernelMajor == 24) {
             return kMethodOffsetSequoia;

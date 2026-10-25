@@ -244,6 +244,7 @@ private:
     auto isPatchedPage(const NativePage& page, const UInt8* data) const -> bool;
 
     bool              submitGuardEnabled{false};
+    bool              legacyBlendEnabled{false};
     mach_vm_address_t orgSharedRegionCheck{0};
 
     auto installSubmitGuard(KernelPatcher& patcher) -> bool;
