@@ -31,6 +31,7 @@
 #include <NRed.hpp>
 #include <VCNBridge.hpp>
 #include <VCNKernelData.hpp>
+#include <VCNKernelDataVentura.hpp>
 #if __has_include(<VCNKernelDataTahoe.hpp>)
 #include <VCNKernelDataTahoe.hpp>
 #define NRED_HAS_VCN_TAHOE 1
@@ -67,6 +68,9 @@ namespace
     // and macOS 26.7.1 (25G241, Darwin 25.6.0).
     bool isSupportedOS()
     {
+        if (currentKernelVersion().major() == 22 && currentKernelVersion().minor() == 6) {
+            return true;
+        }
         if (currentKernelVersion().major() == 24
             || (currentKernelVersion().major() == 23 && currentKernelVersion().minor() == 6)) {
             return true;
@@ -85,6 +89,10 @@ namespace
         if (!isSupportedOS()) { return false; }
         // If the early-boot version string is not populated yet, the ABI guards are the remaining
         // protection; once it is visible, require the matching minor release family.
+        if (currentKernelVersion().major() == 22) {
+            // Only the build whose kernel ABI and user-space pages were generated and checked.
+            return strcmp(osversion, "22G513") == 0;
+        }
         if (osversion[0] == '\0') { return true; }
         if (currentKernelVersion().major() == 24) {
             return strncmp(osversion, "24H", 3) == 0 || strncmp(osversion, "24G", 3) == 0;
@@ -115,7 +123,9 @@ namespace
         // the engine (0x1638 is validated; the other VCN 2.x APUs are experimental) may use this bridge.  The
         // generated ABI guards and the exact build check remain the hard safety gates.
         const auto* const profile = DeviceProfile::current();
-        return isSupportedBuild() && !NRed::singleton().hasExternalVideo() && profile != nullptr
+        const bool venturaDevice = currentKernelVersion().major() != 22
+                                   || NRed::singleton().getDeviceID() == 0x1638;
+        return venturaDevice && isSupportedBuild() && !NRed::singleton().hasExternalVideo() && profile != nullptr
                && profile->media.vcnGeneration == DeviceProfile::kVcn2_2 && profile->media.hasVCN0;
     }
 
@@ -164,6 +174,11 @@ namespace
         const VCNKernelData::SlotGuard* guards{nullptr};
         const char*                     tableSymbol{nullptr};
         size_t                          count{0};
+        if (currentKernelVersion().major() == 22) {
+            guards      = old ? VCNKernelDataVentura::Guards5000 : VCNKernelDataVentura::Guards6000;
+            count       = old ? arrsize(VCNKernelDataVentura::Guards5000) : arrsize(VCNKernelDataVentura::Guards6000);
+            tableSymbol = old ? VCNKernelDataVentura::Table5000 : VCNKernelDataVentura::Table6000;
+        } else
 #ifdef NRED_HAS_VCN_TAHOE
         if (useTahoeVCNData()) {
             guards      = old ? VCNKernelDataTahoe::Guards5000 : VCNKernelDataTahoe::Guards6000;
@@ -234,7 +249,7 @@ void VCNBridge::init()
     }
 
     if (!isSupportedOS()) {
-        SYSLOG("VCN", "VCN data is for macOS 14.x (Darwin 23.6), 15.x (Darwin 24.6) or 26.x (Darwin 25.6); hardware decode boot arg is ignored on this build");
+        SYSLOG("VCN", "VCN data supports Ventura 13.6.4 (22G513), Darwin 23.6/24.6/25.6; hardware decode ignored on this build");
         this->requested = false;
         return;
     }
@@ -285,6 +300,9 @@ bool VCNBridge::acceleratorStart(void* const self, IOService* const provider)
         // Build marker. It cannot live in init(): that runs at kext load, before NRed::iGPU is set, and
         // setProp32() is a no-op while iGPU is null, so the marker never reached the registry.
         NRed::singleton().setProp32("NRedVCNDrainBuild", 2);
+        if (currentKernelVersion().major() == 22) {
+            NRed::singleton().setProp32("NRedVenturaVDARevision", 1);
+        }
         NRed::singleton().setProp32("NRedVCNAccelStartSeen", 1);
         publishStage(5);
     }
@@ -696,6 +714,10 @@ void VCNBridge::processKext(KernelPatcher& patcher, const size_t id, const mach_
         size_t                           callPatchCount = 0;
         const VCNKernelData::CallPatch*  callPatches{nullptr};
         const char*                      signalSymbol{nullptr};
+        if (currentKernelVersion().major() == 22) {
+            callPatches  = VCNKernelDataVentura::getCallPatches(callPatchCount);
+            signalSymbol = VCNKernelDataVentura::SignalSymbol;
+        } else
 #ifdef NRED_HAS_VCN_TAHOE
         if (useTahoeVCNData()) {
             callPatches  = VCNKernelDataTahoe::getCallPatches(callPatchCount);
@@ -707,6 +729,7 @@ void VCNBridge::processKext(KernelPatcher& patcher, const size_t id, const mach_
             signalSymbol = VCNKernelData::SignalSymbol;
         }
         static constexpr size_t kMaxCallPatches = 32;
+        static_assert(arrsize(VCNKernelDataVentura::CallPatches) <= kMaxCallPatches);
         static_assert(arrsize(VCNKernelData::CallPatches_Sonoma) <= kMaxCallPatches);
         static_assert(arrsize(VCNKernelData::CallPatches_Sequoia) <= kMaxCallPatches);
 #ifdef NRED_HAS_VCN_TAHOE

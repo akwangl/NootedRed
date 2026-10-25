@@ -1,7 +1,7 @@
 includes(path.join(os.getenv("AppleForgePath") or "../AppleForge", "xmake/rules/AppleForge.lua"))
 
 set_project("NootedRed")
-set_version("1.1.0")
+set_version("1.1.1") -- Local Ventura 13.6.4 / 22G513 candidate, revision 1.
 
 AppleForge_ApplyDefaults()
 set_allowedarchs("x86_64")
