@@ -130,6 +130,36 @@ IDLE_RECEIVER_PREFIXES = {
     ENGINE_WAIT_SYMBOL: (b"\x48\x8b\x7f\x18", b"\x48\x8b\x7b\x18"),
 }
 
+
+def check_idle_receiver(text, location, function_name):
+    """Verify that the hardware receiver pointer is loaded/passed in %rdi before the vtable load."""
+    field = 0x18 if function_name == ENGINE_WAIT_SYMBOL else 0x20
+    reg_loads_4 = {
+        bytes([rex, 0x8B, modrm, field])
+        for rex in (0x48, 0x49)
+        for modrm in (0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F)
+    }
+    reg_loads_5 = {
+        bytes([0x49, 0x8B, 0x7C, 0x24, field])
+    }
+    reg_movs = {
+        b"\x48\x89\xdf", b"\x48\x89\xf7", b"\x48\x89\xee", b"\x48\x89\xed",
+        b"\x4c\x89\xe7", b"\x4c\x89\xef", b"\x4c\x89\xf7", b"\x4c\x89\xff",
+        b"\x48\x8b\xfb", b"\x48\x8b\xfe",
+    }
+    all_patterns = reg_loads_4 | reg_loads_5 | reg_movs
+
+    for length in (3, 4, 5):
+        if text[location - 3 - length:location - 3] in all_patterns:
+            return True
+
+    window = text[max(0, location - 19):location - 3]
+    for pattern in all_patterns:
+        if pattern in window:
+            return True
+
+    return False
+
 EXPECTED_CALL_PATCHES = 20
 EXPECTED_IDLE_PATCHES = 4
 
@@ -537,10 +567,10 @@ def find_call_patches(kc):
             fail("{}: {}+{:#x} lacks the hardware vtable load".format(
                 kext.kext_id, function_name, candidate_address - function_start))
         if category == "gfxoff-wait":
-            prefixes = IDLE_RECEIVER_PREFIXES[function_name]
-            if text[location - 7:location - 3] not in prefixes:
-                fail("{}: {}+{:#x} lacks the hardware-field receiver load".format(
-                    kext.kext_id, function_name, candidate_address - function_start))
+            if not check_idle_receiver(text, location, function_name):
+                fail("{}: {}+{:#x} lacks the hardware-field receiver load (preceding: {})".format(
+                    kext.kext_id, function_name, candidate_address - function_start,
+                    text[max(0, location - 16):location].hex()))
         original = bytes(text[location:location + 6])
         expected = CALL_RAX_PREFIX + struct.pack("<I", slot)
         if original != expected:
