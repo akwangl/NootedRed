@@ -10,7 +10,7 @@ end
 includes(path.join(appleforge_dir(), "xmake/rules/AppleForge.lua"))
 
 set_project("NootedRed")
-set_version("1.0.0")
+set_version("1.1.1")
 
 AppleForge_ApplyDefaults()
 set_allowedarchs("x86_64")

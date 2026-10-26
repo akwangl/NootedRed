@@ -56,9 +56,11 @@
 #include <libkern/c++/OSMetaClass.h>
 #include <mach/i386/vm_types.h>
 
-// Generated user-space VDA patch tables (macOS 14 Sonoma, 15.8.1 Sequoia, 26.7.1 Tahoe).  They are
+// Generated user-space VDA patch tables (Ventura 13.6.4, Sonoma, Sequoia and Tahoe). They are
 // produced by tools/gen_vda_*_data.py and are committed with this branch; the VCN bridge itself does
 // not depend on them, but VDA user-space patching is a no-op if they are absent.
+#include <VDAVADataVentura.hpp>
+#include <VDAGVADataVentura.hpp>
 #if __has_include(<VDAVADataSonoma.hpp>)
 #include <VDAVADataSonoma.hpp>
 #endif
@@ -100,7 +102,14 @@ void NRed::init()
 
     this->forceVDA = checkKernelArgument("-NRedForceVDA");
 
-    if (getKernelVersion() == KernelVersion::Sonoma) {
+    if (getKernelVersion() == KernelVersion::Ventura) {
+        // Exact stock 22G513 pages, verified against the cache CodeDirectory before generation.
+        // The VCN bridge additionally requires 22G513 and the validated Cezanne 0x1638 device.
+        UserPatches::singleton().registerVDAFix(VDAVADataVentura::Patches,
+                                               arrsize(VDAVADataVentura::Patches));
+        UserPatches::singleton().registerVDAFix(VDAGVADataVentura::Patches,
+                                               arrsize(VDAGVADataVentura::Patches));
+    } else if (getKernelVersion() == KernelVersion::Sonoma) {
 #if __has_include(<VDAVADataSonoma.hpp>)
         if constexpr (arrsize(VDAVADataSonoma::Patches) > 0) {
             UserPatches::singleton().registerVDAFix(VDAVADataSonoma::Patches,

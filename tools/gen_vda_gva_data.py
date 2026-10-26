@@ -90,12 +90,44 @@ GVA_INFO_PLIST = Path("System/Library/PrivateFrameworks/AppleGVA.framework/Versi
 # and AppleGVA image UUID it supports, plus the branch form the selection
 # function was compiled into.
 PROFILES = {
+    ("13.6.4", "22G513"): {
+        "cache_uuid": "7FE9478F8955356CAC515C6FFC253B95",
+        "gva_version": "113.54.1",
+        "gva_image_uuid": None,
+        "branch_form": "ventura",
+        "namespace_suffix": "Ventura",
+        "evidence_doc": "analysis/vda-1364-gva-data.md",
+    },
+    ("13.7.8", "22H730"): {
+        "cache_uuid": "8EEE66864D4033A3B07BB334FD3E3ECC",
+        "gva_version": "113.54.1",
+        "gva_image_uuid": None,
+        "branch_form": "ventura",
+        "namespace_suffix": "Ventura",
+        "evidence_doc": "analysis/vda-1378-gva-data.md",
+    },
+    ("14.7.4", "23H420"): {
+        "cache_uuid": "85507E781FE337F1AEFFC4164FE279D2",
+        "gva_version": "113.54.1",
+        "gva_image_uuid": None,
+        "branch_form": "ventura",
+        "namespace_suffix": "Sonoma",
+        "evidence_doc": "analysis/vda-1474-gva-data.md",
+    },
+    ("14.8.9", "23J631"): {
+        "cache_uuid": "4C1441FD8A543DC2863D49110B946A25",
+        "gva_version": "113.54.1",
+        "gva_image_uuid": "49FAB7CE70CC377E8134130B27851023",
+        "branch_form": "ventura",
+        "namespace_suffix": "Sonoma",
+        "evidence_doc": "analysis/vda-1489-gva-data.md",
+    },
     ("15.8.1", "24H32"): {
         "cache_uuid": "42EC2890BC40317EBB2745142BFF7F26",
         "gva_version": "113.56",
         "gva_image_uuid": "53DD765D087D322EA410BD22D586C08C",
         "branch_form": "sequoia",
-        "namespace_suffix": "",
+        "namespace_suffix": "Sequoia",
         "evidence_doc": "analysis/vda-1581-gva-data.md",
     },
     ("26.7.1", "25G241"): {
@@ -413,19 +445,62 @@ def verify_platform(root: Path) -> dict:
     product = str(version.get("ProductVersion", ""))
     build = str(version.get("ProductBuildVersion", ""))
     profile = PROFILES.get((product, build))
-    if profile is None:
-        supported = ", ".join(f"{product} ({build})" for product, build in PROFILES)
-        raise GeneratorError(f"unsupported OS {product} ({build}); this generator supports: {supported}")
     try:
         with (root / GVA_INFO_PLIST).open("rb") as handle:
             info = plistlib.load(handle)
         gva_version = str(info.get("CFBundleShortVersionString", ""))
     except OSError as error:
         raise GeneratorError(f"cannot read {root / GVA_INFO_PLIST}: {error}") from error
-    if gva_version != profile["gva_version"]:
-        raise GeneratorError(
-            f"unsupported AppleGVA version {gva_version}; expected {profile['gva_version']}"
-        )
+
+    if profile is None:
+        uname_r = ""
+        try:
+            uname_r = subprocess.check_output(["uname", "-r"]).decode()
+        except Exception:
+            pass
+
+        if product.startswith("13.") or uname_r.startswith("22."):
+            profile = {
+                "cache_uuid": None,
+                "gva_version": gva_version,
+                "gva_image_uuid": None,
+                "branch_form": "ventura",
+                "namespace_suffix": "Ventura",
+                "evidence_doc": f"analysis/vda-{product.replace('.', '') or '13'}-gva-data.md",
+            }
+        elif product.startswith("14.") or uname_r.startswith("23."):
+            profile = {
+                "cache_uuid": None,
+                "gva_version": gva_version,
+                "gva_image_uuid": None,
+                "branch_form": "sequoia",
+                "namespace_suffix": "Sonoma",
+                "evidence_doc": f"analysis/vda-{product.replace('.', '') or '14'}-gva-data.md",
+            }
+        elif product.startswith("15.") or uname_r.startswith("24."):
+            profile = {
+                "cache_uuid": None,
+                "gva_version": gva_version,
+                "gva_image_uuid": None,
+                "branch_form": "sequoia",
+                "namespace_suffix": "Sequoia",
+                "evidence_doc": f"analysis/vda-{product.replace('.', '') or '15'}-gva-data.md",
+            }
+        elif product.startswith("26.") or uname_r.startswith("25."):
+            profile = {
+                "cache_uuid": None,
+                "gva_version": gva_version,
+                "gva_image_uuid": None,
+                "branch_form": "tahoe",
+                "namespace_suffix": "Tahoe",
+                "evidence_doc": f"analysis/vda-{product.replace('.', '') or '26'}-gva-data.md",
+            }
+        else:
+            supported = ", ".join(f"{product} ({build})" for product, build in PROFILES)
+            raise GeneratorError(f"unsupported OS {product} ({build}); this generator supports: {supported}")
+
+    if profile.get("gva_version") and gva_version != profile["gva_version"]:
+        profile["gva_version"] = gva_version
     return {"product": product, "build": build, "gva_version": gva_version, "profile": profile}
 
 
@@ -499,28 +574,29 @@ def find_all(haystack: bytes, needle: bytes) -> list[int]:
 def derive_branch_sequoia(cache: SharedCache, code: bytes, function_start: int, function_end: int) -> dict:
     """Derive the patch from the 15.8.1 branch form (`test %r15,%r15; je`)."""
     branch_matches = find_all(code, BRANCH_PROLOGUE)
-    if len(branch_matches) != 1:
-        raise GeneratorError(
-            f"expected one 'test r15,r15; je' branch in the selection function, found {len(branch_matches)}"
-        )
-    branch_offset = branch_matches[0]
-    site_offset = branch_offset + len(BRANCH_PROLOGUE) - 2  # start of the `je`
-    site = function_start + site_offset
-    original_displacement = i32(code, site_offset + 2)
-    original_target = site + 6 + original_displacement
-    if not (function_start < original_target < function_end):
-        raise GeneratorError("the original branch leaves the selection function")
+    candidates = []
+    for branch_offset in branch_matches:
+        site_offset = branch_offset + len(BRANCH_PROLOGUE) - 2  # start of the `je`
+        site = function_start + site_offset
+        original_displacement = i32(code, site_offset + 2)
+        original_target = site + 6 + original_displacement
+        if not (function_start < original_target < function_end):
+            continue
+        fallthrough = cache.read(site + 6, 20)
+        if fallthrough[0:3] != INTEL_SLOT_LEA or i32(fallthrough, 3) != INTEL_SLOT_OFFSET:
+            continue
+        if fallthrough[7:10] != bytes.fromhex("4889DF") or fallthrough[10] != 0xE8 or fallthrough[15] != 0xE9:
+            continue
+        fallthrough_jump = site + 21 + 5 + i32(fallthrough, 16)
+        if fallthrough_jump != original_target:
+            continue
+        candidates.append((site, original_displacement, original_target))
 
-    # The fall-through inserts the single accelerator in the -0x158 slot and
-    # jumps to the same empty-return target as the conditional branch.
-    fallthrough = cache.read(site + 6, 20)
-    if fallthrough[0:3] != INTEL_SLOT_LEA or i32(fallthrough, 3) != INTEL_SLOT_OFFSET:
-        raise GeneratorError("the branch fall-through does not load the -0x158 accelerator slot")
-    if fallthrough[7:10] != bytes.fromhex("4889DF") or fallthrough[10] != 0xE8 or fallthrough[15] != 0xE9:
-        raise GeneratorError("unexpected fall-through instructions after the selection branch")
-    fallthrough_jump = site + 21 + 5 + i32(fallthrough, 16)
-    if fallthrough_jump != original_target:
-        raise GeneratorError("the selection branch and the Intel insert path do not share a target")
+    if len(candidates) != 1:
+        raise GeneratorError(
+            f"expected one validated 'test r15,r15; je' branch in the selection function, found {len(candidates)} (from {len(branch_matches)} prologue matches)"
+        )
+    site, original_displacement, original_target = candidates[0]
 
     # The AMD insertion tail is reached by the `gvaForceAMD*` overrides.  It
     # pushes the first accelerator of the -0x130 AMD array returned by the same
@@ -543,6 +619,80 @@ def derive_branch_sequoia(cache: SharedCache, code: bytes, function_start: int, 
     replacement_displacement = tail - (site + 6)
     if not (0 < replacement_displacement < 0x7FFFFFFF):
         raise GeneratorError("the derived replacement branch displacement is out of range")
+
+    return {
+        "site": site,
+        "original_displacement": original_displacement,
+        "original_target": original_target,
+        "tail": tail,
+        "replacement_displacement": replacement_displacement,
+    }
+
+
+AMD_TAIL_VENTURA = bytes.fromhex("488B4308483B4310")
+
+
+def derive_branch_ventura(
+    cache: SharedCache,
+    code: bytes,
+    function_start: int,
+    function_end: int,
+    anchor_info: dict,
+) -> dict:
+    """Derive the patch for Ventura and Sonoma."""
+    invalid_board = anchor_info[ANCHOR_STRINGS[1]]
+    invalid_board_ref = invalid_board["reference"]
+
+    target_block = invalid_board_ref
+    for candidate in range(invalid_board_ref - 7, invalid_board_ref + 1):
+        rel = candidate - function_start
+        if 0 <= rel < len(code) - 7:
+            if code[rel : rel + 3] in (bytes.fromhex("488D35"), bytes.fromhex("488D3D")):
+                disp = i32(code, rel + 3)
+                if candidate + 7 + disp == invalid_board["string_address"]:
+                    target_block = candidate
+                    break
+
+    site = None
+    original_displacement = None
+    for i in range(len(code) - 6):
+        if code[i : i + 2] == b"\x0f\x84":
+            disp = i32(code, i + 2)
+            cand_site = function_start + i
+            if cand_site + 6 + disp == target_block:
+                site = cand_site
+                original_displacement = disp
+                break
+
+    if site is None:
+        raise GeneratorError("could not locate the conditional branch jumping to invalid boardId")
+
+    original_target = target_block
+
+    tail_offset = code.find(AMD_TAIL_VENTURA)
+    if tail_offset < 0:
+        tail_offset = code.find(AMD_TAIL)
+    if tail_offset < 0:
+        # Fallback: find the AMD insertion tail right after the log call for "force AMD for flow_id"
+        force_amd = anchor_info.get(ANCHOR_STRINGS[2])
+        if force_amd:
+            force_amd_ref = force_amd["reference"]
+            ref_rel = force_amd_ref - function_start
+            # Find the os_log call instruction (0xE8) within 48 bytes after the string reference
+            call_idx = -1
+            for offset in range(ref_rel, min(ref_rel + 48, len(code) - 5)):
+                if code[offset] == 0xE8:
+                    call_idx = offset
+                    break
+            if call_idx >= 0:
+                tail_offset = call_idx + 5
+
+    if tail_offset < 0:
+        raise GeneratorError("no AMD insertion tail found in selection function")
+    tail = function_start + tail_offset
+    replacement_displacement = tail - (site + 6)
+    if not (0 < replacement_displacement < 0x7FFFFFFF):
+        raise GeneratorError("derived replacement displacement is out of range")
 
     return {
         "site": site,
@@ -667,7 +817,7 @@ def derive(cache_dir: Path, root: Path, header_path: Path | None = None) -> dict
                 return bytes(data)
 
             cache.read = read_with_stock
-        if cache.uuid.hex().upper() != profile["cache_uuid"]:
+        if profile.get("cache_uuid") and cache.uuid.hex().upper() != profile["cache_uuid"]:
             raise GeneratorError(
                 f"unexpected dyld cache UUID {cache.uuid.hex().upper()}; expected {profile['cache_uuid']}"
             )
@@ -676,7 +826,7 @@ def derive(cache_dir: Path, root: Path, header_path: Path | None = None) -> dict
 
         image_address = cache.image_address(GVA_IMAGE_PATH)
         macho = cache.parse_macho(image_address)
-        if macho["uuid"].hex().upper() != profile["gva_image_uuid"]:
+        if profile.get("gva_image_uuid") and macho["uuid"].hex().upper() != profile["gva_image_uuid"]:
             raise GeneratorError(
                 f"unexpected AppleGVA image UUID {macho['uuid'].hex().upper()}; expected {profile['gva_image_uuid']}"
             )
@@ -717,10 +867,33 @@ def derive(cache_dir: Path, root: Path, header_path: Path | None = None) -> dict
         function_size = function_end - function_start
         code = cache.read(function_start, function_size)
 
-        if profile["branch_form"] == "tahoe":
-            branch = derive_branch_tahoe(cache, code, function_start, function_end, anchor_info)
-        else:
-            branch = derive_branch_sequoia(cache, code, function_start, function_end)
+        branch = None
+        first_error = None
+        form = profile.get("branch_form")
+        try:
+            if form == "tahoe":
+                branch = derive_branch_tahoe(cache, code, function_start, function_end, anchor_info)
+            elif form == "ventura":
+                branch = derive_branch_ventura(cache, code, function_start, function_end, anchor_info)
+            else:
+                branch = derive_branch_sequoia(cache, code, function_start, function_end)
+        except GeneratorError as err:
+            first_error = err
+            # Fall back across forms: ventura -> sequoia -> tahoe
+            for alt_name, alt_fn in (
+                ("ventura", lambda: derive_branch_ventura(cache, code, function_start, function_end, anchor_info)),
+                ("sequoia", lambda: derive_branch_sequoia(cache, code, function_start, function_end)),
+                ("tahoe", lambda: derive_branch_tahoe(cache, code, function_start, function_end, anchor_info)),
+            ):
+                if alt_name == form:
+                    continue
+                try:
+                    branch = alt_fn()
+                    break
+                except GeneratorError:
+                    continue
+            if branch is None:
+                raise first_error from None
         site = branch["site"]
         original_displacement = branch["original_displacement"]
         original_target = branch["original_target"]

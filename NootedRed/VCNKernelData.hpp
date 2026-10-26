@@ -44,6 +44,9 @@ namespace VCNKernelData {
         const UInt8* getter;
         UInt32 getterSize;
     };
+}
+
+namespace VCNKernelData {
 
     inline constexpr UInt8 Getter5000_1[] = {
         0x55, 0x48, 0x89, 0xE5, 0x8A, 0x87, 0x0E, 0x03,

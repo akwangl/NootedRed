@@ -38,6 +38,7 @@
 #include <kern/task.h>
 #include <IOKit/IOUserClient.h>
 #include <libkern/c++/OSBoolean.h>
+#include <sys/vnode.h>
 
 static UserPatches moduleInstance;
 
@@ -62,6 +63,9 @@ namespace
     const char* const kBootArgSubmitGuard      = "-NRedSubmitGuard";
     const char* const kBootArgLegacyBlend      = "-NRedLegacyBlend";
     const char* const kBootArgNoSubmitGuard    = "-NRedNoSubmitGuard";
+    const char* const kBootArgSubmitGuard      = "-NRedSubmitGuard";
+    const char* const kBootArgNoLegacyBlend    = "-NRedNoLegacyBlend";
+    const char* const kBootArgLegacyBlend      = "-NRedLegacyBlend";
 
     struct SharedRegionCheckArgs
     {
@@ -167,6 +171,7 @@ namespace
     static const UInt8 kMTLAllowFind_Tahoe[]    = {0x0F, 0x94, 0xC1};
     static const UInt8 kMTLAllowReplace_Tahoe[] = {0x31, 0xC9, 0x90};
 
+    #include "UserPatchesVentura.inc"
     #include "UserPatchesSonoma.inc"
     #include "UserPatchesSequoia.inc"
     #include "UserPatchesTahoe.inc"
@@ -174,6 +179,10 @@ namespace
     static const UInt8 kResolverMask32[] = {
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    };
+    static const UInt8 kResolverMask32_RipMasked[] = {
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF,
     };
 
     // macOS 14 (Sonoma) resolver contexts.
@@ -273,6 +282,48 @@ namespace
     };
     constexpr size_t kResolverSignatureCount_Tahoe = arrsize(kResolverSignatures_Tahoe);
 
+    // macOS 13 (Ventura) resolver contexts.
+    static const UInt8 kResolverHwCtx_Ventura[] = {
+        0xAC, 0x00, 0x00, 0x00, 0x41, 0x83, 0xF9, 0x13, 0x77, 0x4D, 0xC7, 0x07, 0x8D, 0x00, 0x00, 0x00,
+        0xC7, 0x47, 0x78, 0x04, 0x00, 0x00, 0x00, 0xC5, 0xF8, 0x28, 0x05, 0x06, 0x0B, 0x0F, 0x00, 0xC5,
+    };
+    static const UInt8 kResolverDualCtx_Ventura[] = {
+        0x88, 0xA0, 0x00, 0x00, 0x00, 0xD1, 0xE9, 0x83, 0xE1, 0x01, 0x8B, 0x83, 0x98, 0x13, 0x00, 0x00,
+        0x83, 0xE0, 0xFE, 0x09, 0xC8, 0x89, 0x83, 0x98, 0x13, 0x00, 0x00, 0x48, 0x8B, 0x8B, 0x68, 0x0D,
+    };
+    static const UInt8 kResolverGateCtx_Ventura[] = {
+        0xFF, 0xFF, 0x48, 0x8B, 0x85, 0x40, 0xFE, 0xFF, 0xFF, 0xF6, 0x80, 0xA0, 0x00, 0x00, 0x00, 0x02,
+        0x75, 0x0B, 0x31, 0xC0, 0x4C, 0x8B, 0xA5, 0x70, 0xFE, 0xFF, 0xFF, 0xEB, 0x24, 0x80, 0xBD, 0x80,
+    };
+    static const UInt8 kResolverAllowCtx_Ventura[] = {
+        0xFF, 0xFF, 0x48, 0x8B, 0x85, 0x60, 0xFE, 0xFF, 0xFF, 0x49, 0x0F, 0xBA, 0x64, 0x04, 0x08, 0x22,
+        0x0F, 0x93, 0xC0, 0x08, 0xC8, 0x4C, 0x8B, 0xB5, 0x50, 0xFE, 0xFF, 0xFF, 0x4C, 0x8B, 0x8D, 0x68,
+    };
+
+    static const UserPatches::SignaturePatch kResolverSignatures_Ventura[] = {
+        {kResolverHwCtx_Ventura, kResolverMask32_RipMasked, sizeof(kResolverHwCtx_Ventura), 16, kGLDriverHwInfoReplace,
+         sizeof(kGLDriverHwInfoReplace), 0, 1, 0xE000},
+        {kResolverDualCtx_Ventura, kResolverMask32, sizeof(kResolverDualCtx_Ventura), 16, kGLDriverDualQuadReplace,
+         sizeof(kGLDriverDualQuadReplace), 0, 1, 0x8000},
+        {kResolverGateCtx_Ventura, kResolverMask32, sizeof(kResolverGateCtx_Ventura), 16, kMTLGateReplace,
+         sizeof(kMTLGateReplace), 0, 1, ~static_cast<UInt64>(0)},
+        {kResolverAllowCtx_Ventura, kResolverMask32, sizeof(kResolverAllowCtx_Ventura), 16, kMTLAllowReplace_Sonoma,
+         sizeof(kMTLAllowReplace_Sonoma), 0, 1, ~static_cast<UInt64>(0)},
+    };
+    constexpr size_t kResolverSignatureCount_Ventura = arrsize(kResolverSignatures_Ventura);
+
+    static const UserPatches::PagePatch kGLDriverPatches_Ventura[] = {
+        {UserPatcher::FileSegment::SegmentTextText, kGLDriverHwInfoPage_Ventura,    kGLDriverHwInfoFind,
+         kGLDriverHwInfoReplace,                    sizeof(kGLDriverHwInfoFind),   0, 1},
+        {UserPatcher::FileSegment::SegmentTextText, kGLDriverDualQuadPage_Ventura,  kGLDriverDualQuadFind,
+         kGLDriverDualQuadReplace,                  sizeof(kGLDriverDualQuadFind), 1, 1},
+        {UserPatcher::FileSegment::SegmentTextText, kMTLControlPage_Ventura,        kMTLGateFind,
+         kMTLGateReplace,                           sizeof(kMTLGateFind),          0, 1},
+        {UserPatcher::FileSegment::SegmentTextText, kMTLControlPage_Ventura,        kMTLAllowFind_Sonoma,
+         kMTLAllowReplace_Sonoma,                   sizeof(kMTLAllowFind_Sonoma),  0, 1},
+    };
+    constexpr size_t kGLDriverPatchCount_Ventura = arrsize(kGLDriverPatches_Ventura);
+
     static const UserPatches::PagePatch kGLDriverPatches_Sonoma[] = {
         {UserPatcher::FileSegment::SegmentTextText, kGLDriverHwInfoPage_Sonoma,    kGLDriverHwInfoFind,
          kGLDriverHwInfoReplace,                    sizeof(kGLDriverHwInfoFind),   0, 1},
@@ -354,6 +405,10 @@ namespace
         {"14.x / Sonoma gfx9 APU", PenguinWizardry::KernelVersion(23, 0), PenguinWizardry::KernelVersion(23, 99),
          UserPatches::kApuAll, kGLDriverPatches_Sonoma, kGLDriverPatchCount_Sonoma,
          kResolverSignatures_Sonoma, kResolverSignatureCount_Sonoma},
+        // macOS 13.x (Ventura) fallback.
+        {"13.x / Ventura gfx9 APU", PenguinWizardry::KernelVersion(22, 0), PenguinWizardry::KernelVersion(22, 99),
+         UserPatches::kApuAll, kGLDriverPatches_Ventura, kGLDriverPatchCount_Ventura,
+         kResolverSignatures_Ventura, kResolverSignatureCount_Ventura},
     };
     constexpr size_t kGLDriverPatchSetCount = sizeof(kGLDriverPatchSets) / sizeof(kGLDriverPatchSets[0]);
 
@@ -493,12 +548,19 @@ void UserPatches::selectPatchSet()
         this->signatures     = kResolverSignatures;
         this->signatureCount = kResolverSignatureCount;
         for (auto& applied : this->signatureApplied) { applied = 0; }
-    } else {
+    } else if (getKernelVersion() >= KernelVersion::Sonoma) {
         SYSLOG("UserPatch", "Fallback: selecting macOS 14 (Sonoma) GL/Metal patch set");
         this->patches        = kGLDriverPatches_Sonoma;
         this->patchCount     = kGLDriverPatchCount_Sonoma;
         this->signatures     = kResolverSignatures_Sonoma;
         this->signatureCount = kResolverSignatureCount_Sonoma;
+        for (auto& applied : this->signatureApplied) { applied = 0; }
+    } else {
+        SYSLOG("UserPatch", "Fallback: selecting macOS 13 (Ventura) GL/Metal patch set");
+        this->patches        = kGLDriverPatches_Ventura;
+        this->patchCount     = kGLDriverPatchCount_Ventura;
+        this->signatures     = kResolverSignatures_Ventura;
+        this->signatureCount = kResolverSignatureCount_Ventura;
         for (auto& applied : this->signatureApplied) { applied = 0; }
     }
 }
@@ -793,9 +855,57 @@ auto UserPatches::isPatchedPage(const NativePage& page, const UInt8* const data)
     return true;
 }
 
-void UserPatches::patchSignaturePage(const void* const data, const UInt64 pageOffset)
+static bool matchSignature(const UInt8* const bytes, const UserPatches::SignaturePatch& sig, size_t& matchOffset)
+{
+    if (sig.context == nullptr || sig.mask == nullptr || sig.replace == nullptr) { return false; }
+    if (sig.contextSize == 0 || sig.contextSize > UserPatches::kPageSize) { return false; }
+    if (sig.patchOffset + sig.replaceSize > sig.contextSize) { return false; }
+
+    size_t skipped = 0;
+    for (size_t offset = 0; offset + sig.contextSize <= UserPatches::kPageSize; offset++) {
+        bool matches = true;
+        for (size_t index = 0; index < sig.contextSize; index++) {
+            if ((bytes[offset + index] & sig.mask[index]) != (sig.context[index] & sig.mask[index])) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            if (skipped < sig.skip) {
+                skipped++;
+                continue;
+            }
+            matchOffset = offset;
+            return true;
+        }
+    }
+    return false;
+}
+
+void UserPatches::patchSignaturePage(const void* const data, const UInt64 pageOffset, void* const vnode)
 {
     if (!this->resolverEnabled || this->signatures == nullptr || this->signatureCount == 0 || data == nullptr) {
+        return;
+    }
+
+    // Gate 1: Vnode verification.
+    // Ensure the page strictly belongs to either the standalone AMDRadeonX5000GLDriver
+    // or the dyld shared cache. Never scan or modify random user binaries or daemons (such as NotificationCenter).
+    if (vnode == nullptr) {
+        return;
+    }
+
+    const char* const vnodeName = vnode_getname(reinterpret_cast<vnode_t>(vnode));
+    if (vnodeName == nullptr) {
+        return;
+    }
+
+    const bool isGLDriver = (strstr(vnodeName, "AMDRadeonX5000GLDriver") != nullptr);
+    const bool isSharedCache = (strstr(vnodeName, "dyld_shared_cache") != nullptr) ||
+                               (strstr(vnodeName, "dyld") != nullptr);
+    vnode_putname(vnodeName);
+
+    if (!isGLDriver && !isSharedCache) {
         return;
     }
 
@@ -810,73 +920,110 @@ void UserPatches::patchSignaturePage(const void* const data, const UInt64 pageOf
 
     const auto* const bytes = static_cast<const UInt8*>(data);
 
-    for (size_t signatureIndex = 0; signatureIndex < this->signatureCount; signatureIndex++) {
-        const auto& signature = this->signatures[signatureIndex];
-
-        if (signatureIndex < kMaxSignatures && this->signatureApplied[signatureIndex] >= signature.count) {
-            continue;
-        }
-
-        if (signature.context == nullptr || signature.mask == nullptr || signature.replace == nullptr) { continue; }
-        if (signature.contextSize == 0 || signature.contextSize > kPageSize) { continue; }
-        if (signature.patchOffset + signature.replaceSize > signature.contextSize) { continue; }
-        if (signature.pageOffset != ~static_cast<UInt64>(0) && signature.pageOffset != pageOffset) { continue; }
-
-        auto skip  = signature.skip;
-        auto count = signature.count;
-        if (signatureIndex < kMaxSignatures && this->signatureApplied[signatureIndex] < count) {
-            count -= this->signatureApplied[signatureIndex];
-        }
-
-        for (size_t offset = 0; offset + signature.contextSize <= kPageSize; offset++) {
-            bool matches = true;
-            for (size_t index = 0; index < signature.contextSize; index++) {
-                if ((bytes[offset + index] & signature.mask[index])
-                    != (signature.context[index] & signature.mask[index]))
-                {
-                    matches = false;
-                    break;
-                }
+    // Gate 2: GL patches ONLY apply to AMDRadeonX5000GLDriver; Metal patches ONLY apply to dyld shared cache.
+    if (isGLDriver) {
+        for (size_t signatureIndex = 0; signatureIndex < this->signatureCount; signatureIndex++) {
+            const auto& signature = this->signatures[signatureIndex];
+            // Skip Metal signatures (which have wildcard pageOffset ~0ULL)
+            if (signature.pageOffset == ~static_cast<UInt64>(0)) {
+                continue;
             }
-            if (!matches) { continue; }
-
-            if (skip != 0) {
-                skip--;
+            if (signatureIndex < kMaxSignatures && this->signatureApplied[signatureIndex] >= signature.count) {
+                continue;
+            }
+            if (signature.pageOffset != pageOffset) {
                 continue;
             }
 
-            if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
-                SYSLOG("UserPatch", "Resolver: failed to disable kernel write protection");
-                return;
+            size_t matchOffset = 0;
+            if (matchSignature(bytes, signature, matchOffset)) {
+                if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
+                    SYSLOG("UserPatch", "Resolver: failed to disable kernel write protection (GL)");
+                    return;
+                }
+
+                memcpy(const_cast<UInt8*>(bytes) + matchOffset + signature.patchOffset, signature.replace,
+                       signature.replaceSize);
+
+                MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+
+                SYSLOG("UserPatch", "Resolver patched GL signature %zu at page offset 0x%zX", signatureIndex, matchOffset);
+                if (signatureIndex < kMaxSignatures) {
+                    this->signatureApplied[signatureIndex]++;
+                }
             }
-
-            memcpy(const_cast<UInt8*>(bytes) + offset + signature.patchOffset, signature.replace,
-                   signature.replaceSize);
-
-            if (MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
-                SYSLOG("UserPatch", "Resolver: failed to restore kernel write protection");
-            }
-
-            SYSLOG("UserPatch", "Resolver patched a signature site at page offset 0x%zX", offset);
-            if (signatureIndex < kMaxSignatures) {
-                this->signatureApplied[signatureIndex]++;
-            }
-
-            if (--count == 0) { break; }
         }
+    } else if (isSharedCache) {
+        // Gate 3: For Metal signatures in dyld shared cache, require co-occurrence of Gate and Allow
+        // on the exact same 4KB page, within a sane relative distance (< 0x500 bytes).
+        // Signatures index 2 & 3 in all tables (Sonoma, Sequoia, Tahoe) represent the Gate and Allow pair.
+        if (this->signatureCount >= 4) {
+            const auto& gateSig = this->signatures[2];
+            const auto& allowSig = this->signatures[3];
 
-        DBGLOG("UserPatch", "Resolver: %zu site(s) still unmatched for signature %zu", count, signatureIndex);
+            if (gateSig.pageOffset == ~static_cast<UInt64>(0) && allowSig.pageOffset == ~static_cast<UInt64>(0)) {
+                const bool needGate = (2 >= kMaxSignatures || this->signatureApplied[2] < gateSig.count);
+                const bool needAllow = (3 >= kMaxSignatures || this->signatureApplied[3] < allowSig.count);
+
+                if (needGate && needAllow) {
+                    size_t gateMatch = 0;
+                    size_t allowMatch = 0;
+                    if (matchSignature(bytes, gateSig, gateMatch) && matchSignature(bytes, allowSig, allowMatch)) {
+                        long diff = static_cast<long>(allowMatch) - static_cast<long>(gateMatch);
+                        if (diff < 0) { diff = -diff; }
+
+                        if (diff < 0x500) {
+                            if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
+                                SYSLOG("UserPatch", "Resolver: failed to disable kernel write protection (Metal)");
+                                return;
+                            }
+
+                            memcpy(const_cast<UInt8*>(bytes) + gateMatch + gateSig.patchOffset, gateSig.replace,
+                                   gateSig.replaceSize);
+                            memcpy(const_cast<UInt8*>(bytes) + allowMatch + allowSig.patchOffset, allowSig.replace,
+                                   allowSig.replaceSize);
+
+                            MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+
+                            SYSLOG("UserPatch", "Resolver matched and patched Metal Gate (0x%zX) and Allow (0x%zX) atomically",
+                                   gateMatch, allowMatch);
+                            if (2 < kMaxSignatures) { this->signatureApplied[2]++; }
+                            if (3 < kMaxSignatures) { this->signatureApplied[3]++; }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-void UserPatches::patchNativePage(const void* const data, const UInt64 pageOffset)
+void UserPatches::patchNativePage(const void* const data, const UInt64 pageOffset, void* const vnode)
 {
     if (data == nullptr) { return; }
+
+    // Gate 0: Vnode verification.
+    // Ensure the page strictly belongs to supported graphics/media drivers or the dyld shared cache.
+    // Random user applications or system daemons (such as NotificationCenter) are discarded immediately.
+    if (vnode != nullptr) {
+        const char* const vnodeName = vnode_getname(reinterpret_cast<vnode_t>(vnode));
+        if (vnodeName != nullptr) {
+            const bool isGLDriver = (strstr(vnodeName, "AMDRadeonX5000GLDriver") != nullptr);
+            const bool isVADriver = (strstr(vnodeName, "AMDRadeonVADriver") != nullptr);
+            const bool isAppleGVA = (strstr(vnodeName, "AppleGVA") != nullptr);
+            const bool isSharedCache = (strstr(vnodeName, "dyld_shared_cache") != nullptr) ||
+                                       (strstr(vnodeName, "dyld") != nullptr);
+            vnode_putname(vnodeName);
+
+            if (!isGLDriver && !isVADriver && !isAppleGVA && !isSharedCache) {
+                return;
+            }
+        }
+    }
 
     // Test mode: bypass the safe exact-page path and exercise the resolver.  It is intentionally separated
     // by a boot argument so it cannot be enabled by accident.
     if (this->resolverOnly) {
-        this->patchSignaturePage(data, pageOffset);
+        this->patchSignaturePage(data, pageOffset, vnode);
         return;
     }
 
@@ -938,73 +1085,11 @@ void UserPatches::patchNativePage(const void* const data, const UInt64 pageOffse
     // The page may already contain our replacement bytes from an earlier validation (the page cache is
     // shared).  Do not rescan it with the resolver; that would only produce false "signature not found"
     // errors and unnecessary work.
-    // A page that matches every individual patch site but not the whole stored image means the table was
-    // built from a different (or polluted) build of the driver: the patch is silently skipped and the
-    // failure only surfaces indirectly (e.g. VideoToolbox falling back to software).  Log it once per
-    // declared page.  All sites must match, otherwise an unrelated page with colliding bytes at one site
-    // would trip the one-shot flag and suppress the diagnostic for the real target page.
-    // The memcmp stays in bounds by construction: buildNativePatches() rejects null find/zero or oversized
-    // sites and only registers offsets found by scanning with `offset + size <= kPageSize`, and `data`
-    // always addresses a full page here.
     for (size_t pageIndex = 0; pageIndex < this->nativePageCount; pageIndex++) {
-        auto& page = this->nativePages[pageIndex];
-        if (page.siteCount == 0 || page.mismatchLogged) { continue; }
-        bool allSitesMatch = true;
-        for (size_t siteIndex = 0; siteIndex < page.siteCount; siteIndex++) {
-            const auto& site = page.sites[siteIndex];
-            // Defensive re-validation of the registration-time invariants (see above): reject any site
-            // that could not be compared safely even if a future registration path bypassed the checks.
-            if (site.find == nullptr || site.size == 0 || site.size > kPageSize
-                || site.offset > kPageSize - site.size)
-            {
-                allSitesMatch = false;
-                break;
-            }
-            if (memcmp(static_cast<const UInt8*>(data) + site.offset, site.find, site.size) != 0) {
-                allSitesMatch = false;
-                break;
-            }
-        }
-        if (!allSitesMatch) { continue; }
-
-        if (page.vda && !VCNBridge::singleton().loadReady()) {
-            DBGLOG("UserPatch", "VDA page site-matched but the VCN bridge is not ready; leaving it unpatched");
-            continue;
-        }
-
-        if (page.vda && isFairPlayClient(current_task())) {
-            DBGLOG("UserPatch", "Skipping VDA patches for FairPlay client task (site fallback)");
-            continue;
-        }
-
-        if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
-            SYSLOG("UserPatch", "Failed to disable kernel write protection for site fallback");
-            return;
-        }
-
-        for (size_t siteIndex = 0; siteIndex < page.siteCount; siteIndex++) {
-            const auto& site = page.sites[siteIndex];
-            memcpy(const_cast<UInt8*>(static_cast<const UInt8*>(data)) + site.offset, site.replace, site.size);
-        }
-
-        if (MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
-            SYSLOG("UserPatch", "Failed to restore kernel write protection for site fallback");
-        }
-
-        page.mismatchLogged = true;
-        SYSLOG("UserPatch",
-               "Page %zu: stored page image differed, but all %zu patch site(s) matched; site-patched successfully",
-               pageIndex, page.siteCount);
-
-        if (page.vda) {
-            const auto applied = static_cast<UInt32>(OSIncrementAtomic(&this->vdaAppliedCount) + 1);
-            NRed::singleton().setProp32("NRedVCNUserApplied", applied);
-        }
-
-        return;
+        if (this->isPatchedPage(this->nativePages[pageIndex], static_cast<const UInt8*>(data))) { return; }
     }
 
-    this->patchSignaturePage(data, pageOffset);
+    this->patchSignaturePage(data, pageOffset, vnode);
 }
 
 void UserPatches::wrapCsValidatePage(void* const vnode, void* const pager, const UInt64 pageOffset,
@@ -1014,7 +1099,7 @@ void UserPatches::wrapCsValidatePage(void* const vnode, void* const pager, const
                                                                     nx);
 
     // Only patch pages that passed validation, so that a rejected page is never turned into a valid-looking one.
-    if (validated != nullptr && *validated != 0) { singleton().patchNativePage(data, pageOffset); }
+    if (validated != nullptr && *validated != 0) { singleton().patchNativePage(data, pageOffset, vnode); }
 }
 
 boolean_t UserPatches::wrapCsValidateRange(void* const vnode, void* const pager, const UInt64 pageOffset,
@@ -1027,7 +1112,7 @@ boolean_t UserPatches::wrapCsValidateRange(void* const vnode, void* const pager,
 
     const auto* const bytes = static_cast<const UInt8*>(data);
     for (size_t offset = 0; offset + kPageSize <= dataSize; offset += kPageSize) {
-        singleton().patchNativePage(bytes + offset, pageOffset + offset);
+        singleton().patchNativePage(bytes + offset, pageOffset + offset, vnode);
     }
 
     return result;
@@ -1144,8 +1229,17 @@ void UserPatches::applySubmitGuard(vm_map_t map, mach_vm_offset_t base, proc_t p
 
     // Restore protections: first current, then maximum
     auto restored = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
+    if (restored != KERN_SUCCESS) {
+        restored = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
+    }
     if (restored == KERN_SUCCESS) {
-        vm_protect(map, methodPage, PAGE_SIZE, TRUE, protection);
+        const auto maxRestored = vm_protect(map, methodPage, PAGE_SIZE, TRUE, protection);
+        if (maxRestored != KERN_SUCCESS) {
+            restored = maxRestored;
+            SYSLOG("UserPatch", "Failed to restore maximum protection for submit method page (0x%X)", maxRestored);
+        }
+    } else {
+        SYSLOG("UserPatch", "Failed to restore current protection for submit method page (0x%X)", restored);
     }
 
     if (written == 0 && restored == KERN_SUCCESS) {
@@ -1168,63 +1262,105 @@ void UserPatches::applySubmitGuard(vm_map_t map, mach_vm_offset_t base, proc_t p
     }
 }
 
+namespace
+{
+    // The allow site is one of the three-byte forms the analysed builds use: `xor eax, eax; nop` or the
+    // `setne/sete al; rol al, ...` variants.  Anything else means the offsets do not belong to this build,
+    // and the gate must not be applied on its own.
+    inline bool isAllowOpcode(const UInt8 b0, const UInt8 b1, const UInt8 b2)
+    {
+        return (b0 == 0x31 && b1 == 0xC0 && b2 == 0x90) ||
+               (b0 == 0x0F && (b1 == 0x93 || b1 == 0x94) && b2 == 0xC0);
+    }
+
+    inline bool isAllowAlreadyPatched(const UInt8 b0, const UInt8 b1, const UInt8 b2)
+    {
+        return (b0 == 0xB0 && b1 == 0x01 && b2 == 0x90);
+    }
+}
+
 void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t process)
 {
-    const auto kernelMajor = currentKernelVersion().major();
-    mach_vm_offset_t gateOffset = 0;
-    mach_vm_offset_t allowOffset = 0;
+    if (!this->legacyBlendEnabled) {
+        return;
+    }
+    if (copyInFunc == nullptr || copyOutFunc == nullptr) {
+        return;
+    }
 
-    if (kernelMajor == 23) {
+    const auto kernelMajor = currentKernelVersion().major();
+    mach_vm_offset_t baseGateOffset = 0;
+    mach_vm_offset_t baseAllowOffset = 0;
+    UInt32 expectedDelta = 0;
+
+    if (kernelMajor == 22) {
+        // macOS 13 Ventura (Darwin 22)
+        baseGateOffset = 0x3000BC24CULL;
+        baseAllowOffset = 0x3000BC278ULL;
+        expectedDelta = 0x2C;
+    } else if (kernelMajor == 23) {
         // macOS 14 Sonoma (Darwin 23)
-        // Gate (75 0B -> EB 0B) at 0x30354D1BCULL
-        // Allow (force DISABLE_DUAL_QUAD = 1: B0 01 90) at 0x30354D1DBULL
-        gateOffset = 0x30354D1BCULL;
-        allowOffset = 0x30354D1DBULL;
+        baseGateOffset = 0x30354D1BCULL;
+        baseAllowOffset = 0x30354D1DBULL;
+        expectedDelta = 0x1F;
     } else if (kernelMajor == 24) {
         // macOS 15 Sequoia (Darwin 24)
-        gateOffset = 0x3087B3164ULL;
-        allowOffset = 0x3087B3185ULL;
+        baseGateOffset = 0x3087B3164ULL;
+        baseAllowOffset = 0x3087B3198ULL;
+        expectedDelta = 0x34;
     } else if (kernelMajor == 25) {
         // macOS 26 Tahoe (Darwin 25)
-        gateOffset = 0x310C77708ULL;
+        baseGateOffset = 0x310C77708ULL;
+        baseAllowOffset = 0;
+        expectedDelta = 0;
     } else {
         return;
     }
 
-    const mach_vm_address_t gateAddr = base + gateOffset;
-    UInt8 gateBytes[2]{};
-    if (copyInFunc(reinterpret_cast<const void*>(gateAddr), gateBytes, sizeof(gateBytes)) != 0) {
-        return;
-    }
-
+    mach_vm_offset_t resolvedGateOffset = 0;
+    mach_vm_offset_t resolvedAllowOffset = 0;
     bool needsGatePatch = false;
-    UInt8 targetGate[2]{0xEB, 0x0B};
-    if (kernelMajor == 23 || kernelMajor == 24) {
-        if (gateBytes[0] == 0x75 && gateBytes[1] == 0x0B) {
-            needsGatePatch = true;
-        } else if (gateBytes[0] == 0xEB && gateBytes[1] == 0x0B) {
-            // Already patched gate
-        } else {
-            return; // Unknown opcode, safely skip
-        }
-    } else if (kernelMajor == 25) {
+    bool needsAllowPatch = false;
+    UInt8 targetGate[2] = {0xEB, 0x0B};
+    UInt8 targetAllow[3] = {0xB0, 0x01, 0x90};
+
+    if (kernelMajor == 25) {
         targetGate[0] = 0xEB; targetGate[1] = 0x00;
-        if (gateBytes[0] == 0x74 && gateBytes[1] == 0x28) {
-            needsGatePatch = true;
-        }
     }
 
-    bool needsAllowPatch = false;
-    UInt8 targetAllow[3] = {0xB0, 0x01, 0x90};
-    mach_vm_address_t allowAddr = 0;
-    if (allowOffset != 0) {
-        allowAddr = base + allowOffset;
-        UInt8 allowBytes[3]{};
-        if (copyInFunc(reinterpret_cast<const void*>(allowAddr), allowBytes, sizeof(allowBytes)) == 0) {
-            if ((allowBytes[0] == 0x31 && allowBytes[1] == 0xC0 && allowBytes[2] == 0x90) ||
-                (allowBytes[0] == 0x0F && allowBytes[1] == 0x93 && allowBytes[2] == 0xC0) ||
-                (allowBytes[0] == 0x0F && allowBytes[1] == 0x94 && allowBytes[2] == 0xC0)) {
-                needsAllowPatch = true;
+    // Step 1: Fast path - test nominal hardcoded offsets first
+    bool fastPathSuccess = false;
+    {
+        UInt8 gateBytes[2]{};
+        if (copyInFunc(reinterpret_cast<const void*>(base + baseGateOffset), gateBytes, sizeof(gateBytes)) == 0) {
+            if (kernelMajor == 22 || kernelMajor == 23 || kernelMajor == 24) {
+                if (gateBytes[0] == 0x75 && gateBytes[1] == 0x0B) {
+                    UInt8 allowBytes[3]{};
+                    if (copyInFunc(reinterpret_cast<const void*>(base + baseAllowOffset), allowBytes, sizeof(allowBytes)) == 0) {
+                        if (isAllowOpcode(allowBytes[0], allowBytes[1], allowBytes[2])) {
+                            resolvedGateOffset = baseGateOffset;
+                            resolvedAllowOffset = baseAllowOffset;
+                            needsGatePatch = true;
+                            needsAllowPatch = true;
+                            fastPathSuccess = true;
+                        }
+                    }
+                } else if (gateBytes[0] == 0xEB && gateBytes[1] == 0x0B) {
+                    UInt8 allowBytes[3]{};
+                    if (copyInFunc(reinterpret_cast<const void*>(base + baseAllowOffset), allowBytes, sizeof(allowBytes)) == 0) {
+                        if (isAllowAlreadyPatched(allowBytes[0], allowBytes[1], allowBytes[2])) {
+                            return; // Already patched in this shared region instance
+                        }
+                    }
+                }
+            } else if (kernelMajor == 25) {
+                if (gateBytes[0] == 0x74 && gateBytes[1] == 0x28) {
+                    resolvedGateOffset = baseGateOffset;
+                    needsGatePatch = true;
+                    fastPathSuccess = true;
+                } else if (gateBytes[0] == 0xEB && gateBytes[1] == 0x00) {
+                    return; // Already patched
+                }
             }
         }
     }
@@ -1240,31 +1376,76 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
         return;
     }
 
-    const mach_vm_address_t pageAddr = gateAddr & ~static_cast<mach_vm_address_t>(PAGE_SIZE - 1);
-    vm_prot_t protection{VM_PROT_NONE};
-    if (!leafProtection(map, pageAddr, protection) || protection != (VM_PROT_READ | VM_PROT_EXECUTE)) {
+    vm_prot_t allowProt{VM_PROT_NONE};
+    if (allowPage != 0 && allowPage != gatePage) {
+        if (!leafProtection(map, allowPage, allowProt) || allowProt != (VM_PROT_READ | VM_PROT_EXECUTE)) {
+            return;
+        }
+    }
+
+    // Backup original gate bytes before writing for rollback on partial failure
+    UInt8 orgGate[2]{};
+    if (copyInFunc(reinterpret_cast<const void*>(gateAddr), orgGate, sizeof(orgGate)) != 0) {
         return;
     }
 
-    auto result = vm_protect(map, pageAddr, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-    if (result != KERN_SUCCESS) {
+    if (vm_protect(map, gatePage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
         return;
+    }
+    if (allowPage != 0 && allowPage != gatePage) {
+        if (vm_protect(map, allowPage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
+            auto rollback = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+            if (rollback == KERN_SUCCESS) {
+                vm_protect(map, gatePage, PAGE_SIZE, TRUE, gateProt);
+            }
+            return;
+        }
     }
 
     int writeErr = 0;
-    if (needsGatePatch) {
-        writeErr |= copyOutFunc(targetGate, reinterpret_cast<void*>(gateAddr), sizeof(targetGate));
-    }
-    if (needsAllowPatch && allowAddr != 0) {
-        writeErr |= copyOutFunc(targetAllow, reinterpret_cast<void*>(allowAddr), sizeof(targetAllow));
+    writeErr = copyOutFunc(targetGate, reinterpret_cast<void*>(gateAddr), sizeof(targetGate));
+    if (writeErr == 0 && allowAddr != 0) {
+        const int allowErr = copyOutFunc(targetAllow, reinterpret_cast<void*>(allowAddr), sizeof(targetAllow));
+        if (allowErr != 0) {
+            // Rollback gate patch to maintain all-or-nothing consistency
+            copyOutFunc(orgGate, reinterpret_cast<void*>(gateAddr), sizeof(orgGate));
+            writeErr = allowErr;
+            SYSLOG("UserPatch", "LegacyBlend allow patch failed (0x%X), rolled back gate patch", allowErr);
+        }
     }
 
-    auto restored = vm_protect(map, pageAddr, PAGE_SIZE, FALSE, protection);
-    if (restored == KERN_SUCCESS) {
-        vm_protect(map, pageAddr, PAGE_SIZE, TRUE, protection);
+    auto restoredGate = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+    if (restoredGate != KERN_SUCCESS) {
+        restoredGate = vm_protect(map, gatePage, PAGE_SIZE, FALSE, gateProt);
+    }
+    if (restoredGate == KERN_SUCCESS) {
+        const auto maxGate = vm_protect(map, gatePage, PAGE_SIZE, TRUE, gateProt);
+        if (maxGate != KERN_SUCCESS) {
+            restoredGate = maxGate;
+            SYSLOG("UserPatch", "Failed to restore maximum protection for gate page (0x%X)", maxGate);
+        }
+    } else {
+        SYSLOG("UserPatch", "Failed to restore current protection for gate page (0x%X)", restoredGate);
     }
 
-    if (writeErr == 0 && restored == KERN_SUCCESS) {
+    kern_return_t restoredAllow = KERN_SUCCESS;
+    if (allowPage != 0 && allowPage != gatePage) {
+        restoredAllow = vm_protect(map, allowPage, PAGE_SIZE, FALSE, allowProt);
+        if (restoredAllow != KERN_SUCCESS) {
+            restoredAllow = vm_protect(map, allowPage, PAGE_SIZE, FALSE, allowProt);
+        }
+        if (restoredAllow == KERN_SUCCESS) {
+            const auto maxAllow = vm_protect(map, allowPage, PAGE_SIZE, TRUE, allowProt);
+            if (maxAllow != KERN_SUCCESS) {
+                restoredAllow = maxAllow;
+                SYSLOG("UserPatch", "Failed to restore maximum protection for allow page (0x%X)", maxAllow);
+            }
+        } else {
+            SYSLOG("UserPatch", "Failed to restore current protection for allow page (0x%X)", restoredAllow);
+        }
+    }
+
+    if (writeErr == 0 && restoredGate == KERN_SUCCESS && restoredAllow == KERN_SUCCESS) {
         static volatile UInt32 blendCounter{0};
         const auto count = static_cast<UInt32>(OSIncrementAtomic(&blendCounter) + 1);
         NRed::singleton().setProp32("NRedLegacyBlendApplied", count);
@@ -1287,7 +1468,7 @@ void UserPatches::applyLegacyBlend(vm_map_t map, mach_vm_offset_t base, proc_t p
 bool UserPatches::installSharedRegionHook(KernelPatcher& patcher)
 {
     const auto kernelMajor = currentKernelVersion().major();
-    if (kernelMajor != 23 && kernelMajor != 24 && kernelMajor != 25) {
+    if (kernelMajor != 22 && kernelMajor != 23 && kernelMajor != 24 && kernelMajor != 25) {
         DBGLOG("UserPatch", "SubmitGuard not supported on Darwin %u", kernelMajor);
         return false;
     }

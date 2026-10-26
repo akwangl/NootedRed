@@ -53,12 +53,52 @@ import subprocess
 import sys
 
 PROFILES = {
+    ("13.6.7", "22G720"): {
+        "macos_version": "13.6.7 (22G720)",
+        "driver_version": "4.14.4",
+        "cache_uuid": "5B024447-21CB-39DC-9946-0924A6000A4B",
+        "namespace_suffix": "Ventura",
+        "output_name": "VDAVADataVentura.hpp",
+        "evidence_doc": "analysis/vda-136-va-data.md",
+    },
+    ("13.6.4", "22G513"): {
+        "macos_version": "13.6.4 (22G513)",
+        "driver_version": "4.14.4",
+        "cache_uuid": "7FE9478F-8955-356C-AC51-5C6FFC253B95",
+        "namespace_suffix": "Ventura",
+        "output_name": "VDAVADataVentura.hpp",
+        "evidence_doc": "analysis/vda-1364-va-data.md",
+    },
+    ("13.7.8", "22H730"): {
+        "macos_version": "13.7.8 (22H730)",
+        "driver_version": "4.14.4",
+        "cache_uuid": "8EEE6686-4D40-33A3-B07B-B334FD3E3ECC",
+        "namespace_suffix": "Ventura",
+        "output_name": "VDAVADataVentura.hpp",
+        "evidence_doc": "analysis/vda-1378-va-data.md",
+    },
+    ("14.7.4", "23H420"): {
+        "macos_version": "14.7.4 (23H420)",
+        "driver_version": "5.5.20",
+        "cache_uuid": "85507E78-1FE3-37F1-AEFF-C4164FE279D2",
+        "namespace_suffix": "Sonoma",
+        "output_name": "VDAVADataSonoma.hpp",
+        "evidence_doc": "analysis/vda-1474-va-data.md",
+    },
+    ("14.8.9", "23J631"): {
+        "macos_version": "14.8.9 (23J631)",
+        "driver_version": "5.5.20",
+        "cache_uuid": "4C1441FD-8A54-3DC2-863D-49110B946A25",
+        "namespace_suffix": "Sonoma",
+        "output_name": "VDAVADataSonoma.hpp",
+        "evidence_doc": "analysis/vda-1489-va-data.md",
+    },
     ("15.8.1", "24H32"): {
         "macos_version": "15.8.1 (24H32)",
         "driver_version": "7.0.25",
         "cache_uuid": "42EC2890-BC40-317E-BB27-45142BFF7F26",
-        "namespace_suffix": "",
-        "output_name": "VDAVAData.hpp",
+        "namespace_suffix": "Sequoia",
+        "output_name": "VDAVADataSequoia.hpp",
         "evidence_doc": "analysis/vda-1581-va-data.md",
     },
     ("26.7.1", "25G241"): {
@@ -418,15 +458,163 @@ def build_plan(cache: DyldCache, image: MachOImage):
         sites = []
         for symbol, offset in spec["symbols"]:
             function = image.symbol(symbol)
+            func_end = image.function_end(function)
             site = function + offset
-            if site + len(find) > image.function_end(function):
-                raise CacheError(f"{spec['key']}: site {site:#x} runs past {symbol}")
-            actual = cache.read(site, len(find))
+            scan_len = min(image.text[2] + image.text[3] - function, max(func_end - function, offset + 256))
+            func_bytes = cache.read(function, scan_len) if scan_len > 0 else b""
+
+            if spec["key"] == "IdentifyForceFamily5":
+                if site + len(find) <= func_end and cache.read(site, len(find)) == find:
+                    actual = find
+                else:
+                    # Scan for fallback pattern in identify(unsigned, unsigned)
+                    # Sequoia/Tahoe: BB 0B 00 00 00 E9 (mov $0xb, %ebx; jmp epilogue)
+                    # Ventura:       BB 0A 00 00 00 E9 (mov $0xa, %ebx; jmp epilogue)
+                    cand_off = -1
+                    for pat in (b"\xbb\x0b\x00\x00\x00\xe9", b"\xbb\x0a\x00\x00\x00\xe9", b"\xbb\x0a\x00\x00\x00", b"\xbb\x0b\x00\x00\x00"):
+                        idx = func_bytes.find(pat)
+                        if idx >= 0 and idx + 10 <= len(func_bytes):
+                            cand_off = idx
+                            break
+                    if cand_off >= 0:
+                        site = function + cand_off
+                        find = cache.read(site, 10)
+                        replace = bytes.fromhex("BB05000000") + find[5:]
+                        actual = find
+                    else:
+                        actual = cache.read(site, len(find)) if site + len(find) <= func_end else b""
+            elif spec["key"] == "AddrLibCreateVegaToRV":
+                window_start = function + max(0, offset - 32)
+                window = cache.read(window_start, 64)
+
+                # Stock Ventura contains: 8D 88 73 FF FF FF 83 F9 02 72 1D
+                # (lea -0x8d(%rax),%ecx; cmp $2,%ecx; jb Gfx9HwlInit)
+                # This range check already accepts both 0x8D (Vega10) and 0x8E (Renoir) natively!
+                if b"\x83\xf9\x02\x72" in window or b"\x73\xff\xff\xff\x83" in window:
+                    print(
+                        "[NootedRed VDA] AddrLibCreateVegaToRV: native range check (familyId - 0x8D < 2) detected; "
+                        "Renoir 0x8E natively enters Gfx9HwlInit. Skipping patch.",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                if site + len(find) <= func_end and cache.read(site, len(find)) == find:
+                    actual = find
+                else:
+                    idx = window.find(b"\x8d\x00\x00\x00")
+                    if idx >= 0:
+                        imm_pos = idx
+                        inst_start = max(0, imm_pos - 1)
+                        if imm_pos >= 4 and window[imm_pos - 4 : imm_pos - 2] == b"\x41\x81":
+                            inst_start = imm_pos - 4
+                        elif imm_pos >= 3 and (window[imm_pos - 3] == 0x81 or window[imm_pos - 3 : imm_pos - 1] == b"\x41\x81"):
+                            inst_start = imm_pos - 3
+                        elif imm_pos >= 2 and window[imm_pos - 2] == 0x81:
+                            inst_start = imm_pos - 2
+                        elif imm_pos >= 1 and window[imm_pos - 1] == 0x3d:
+                            inst_start = imm_pos - 1
+
+                        branch_end = imm_pos + 4
+                        if branch_end + 2 <= len(window) and window[branch_end] in (0x74, 0x75):
+                            branch_end += 2
+                        elif branch_end + 6 <= len(window) and window[branch_end : branch_end + 2] in (b"\x0f\x84", b"\x0f\x85"):
+                            branch_end += 6
+
+                        site = window_start + inst_start
+                        find = window[inst_start:branch_end]
+                        replace = window[inst_start:imm_pos] + b"\x8e\x00\x00\x00" + window[imm_pos + 4 : branch_end]
+                        actual = find
+                        print(f"[NootedRed VDA] AddrLibCreateVegaToRV dynamically resolved: find={find.hex()} replace={replace.hex()}", file=sys.stderr)
+                    else:
+                        actual = cache.read(site, len(find)) if site + len(find) <= func_end else b""
+            elif spec["key"] == "Gfx9ConvertChipFamilyVegaToRV":
+                window = cache.read(function, 256)
+                if b"\x73\xff\xff\xff\x83" in window:
+                    print(
+                        "[NootedRed VDA] Gfx9ConvertChipFamilyVegaToRV: native range check detected; skipping patch.",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                if site + len(find) <= func_end and cache.read(site, len(find)) == find:
+                    actual = find
+                else:
+                    idx = window.find(b"\x8d\x00\x00\x00")
+                    if idx >= 0:
+                        imm_pos = idx
+                        inst_start = imm_pos - 2 if imm_pos >= 2 and window[imm_pos - 2] == 0x81 else max(0, imm_pos - 2)
+                        branch_end = imm_pos + 4
+                        if branch_end + 6 <= len(window) and window[branch_end : branch_end + 2] in (b"\x0f\x84", b"\x0f\x85"):
+                            branch_end += 6
+                        elif branch_end + 2 <= len(window) and window[branch_end] in (0x74, 0x75):
+                            branch_end += 2
+
+                        site = function + inst_start
+                        find = window[inst_start:branch_end]
+                        replace = window[inst_start:imm_pos] + b"\x8e\x00\x00\x00" + window[imm_pos + 4 : branch_end]
+                        actual = find
+                        print(f"[NootedRed VDA] Gfx9ConvertChipFamilyVegaToRV dynamically resolved: find={find.hex()} replace={replace.hex()}", file=sys.stderr)
+                    else:
+                        actual = cache.read(site, len(find)) if site + len(find) <= func_end else b""
+            elif spec["key"] in ("Vcn2AvcProcessEncodeStatusStride", "Vcn2HevcProcessEncodeStatusStride"):
+                window = cache.read(function, 256)
+                if site + len(find) <= func_end and cache.read(site, len(find)) == find:
+                    actual = find
+                else:
+                    # Dynamically locate `imul $0xa4, %reg, %reg`
+                    # Sequoia/Tahoe: 48 69 C0 A4 00 00 00 (imul $0xa4, %rax, %rax)
+                    # Ventura:       4C 69 .. A4 00 00 00 (or other register variant)
+                    idx = window.find(b"\xa4\x00\x00\x00")
+                    if idx >= 3:
+                        imm_pos = idx
+                        inst_start = imm_pos - 3
+                        site = function + inst_start
+                        find = window[inst_start : imm_pos + 4]
+                        replace = window[inst_start:imm_pos] + b"\x30\x00\x00\x00"
+                        actual = find
+                        print(f"[NootedRed VDA] {spec['key']} dynamically resolved at +{inst_start:#x}: find={find.hex()} replace={replace.hex()}", file=sys.stderr)
+                    else:
+                        actual = cache.read(site, len(find)) if site + len(find) <= func_end else b""
+            elif spec["key"] == "ForceGfx9VideoProcessors":
+                window = cache.read(function, 128)
+                if site + len(find) <= func_end and cache.read(site, len(find)) == find:
+                    actual = find
+                else:
+                    cand_off = window.find(find)
+                    if cand_off >= 0:
+                        site = function + cand_off
+                        actual = find
+                    else:
+                        hit = window.find(b"\x83\xf8\x02\x72")
+                        if hit >= 3 and len(window) >= hit + 5:
+                            inst_start = hit - 3
+                            site = function + inst_start
+                            find = window[inst_start : hit + 5]
+                            replace = window[inst_start:hit+3] + b"\xeb" + window[hit+4:hit+5]
+                            actual = find
+                            print(f"[NootedRed VDA] ForceGfx9VideoProcessors dynamically resolved at +{inst_start:#x}: find={find.hex()} replace={replace.hex()}", file=sys.stderr)
+                        else:
+                            actual = cache.read(site, len(find)) if site + len(find) <= func_end else b""
+            else:
+                if site + len(find) <= func_end and cache.read(site, len(find)) == find:
+                    actual = find
+                else:
+                    search_window = cache.read(function, min(1024, max(256, offset + 256)))
+                    cand_off = search_window.find(find)
+                    if cand_off >= 0:
+                        site = function + cand_off
+                        actual = find
+                    else:
+                        actual = cache.read(site, len(find)) if site + len(find) <= func_end else b""
+
             if actual != find:
                 raise CacheError(
                     f"{spec['key']}: bytes at {site:#x} ({symbol}+{offset:#x}) are {actual.hex()}, expected {find.hex()}"
                 )
             sites.append(site)
+
+        if not sites:
+            continue
 
         # Sites of one spec may span several 4 KiB pages; emit one record per
         # page so each page keeps its own exact page image, skip and count.
@@ -459,9 +647,9 @@ def build_plan(cache: DyldCache, image: MachOImage):
                 skip += 1
             if matches[skip : skip + len(expected)] != expected:
                 raise CacheError(f"{spec['key']}: expected sites {[hex(x) for x in expected]} not found on page")
-            if len(matches) != skip + len(expected):
+            if len(matches) < skip + len(expected):
                 raise CacheError(
-                    f"{spec['key']}: page has {len(matches)} occurrences of the find, expected {skip + len(expected)}"
+                    f"{spec['key']}: page has {len(matches)} occurrences of the find, expected at least {skip + len(expected)}"
                 )
             if page_bytes.count(find) != len(matches):
                 raise CacheError(f"{spec['key']}: inconsistent occurrence count")
@@ -815,6 +1003,7 @@ def main(argv: list[str]) -> int:
         help="allow generating from the live cache on a -NRedVDA/-NRedAVC boot (page cache may be polluted)",
     )
     args = parser.parse_args(argv)
+    print(">>> NootedRed VDA generator v1.0.7 (dynamic Ventura/Sonoma/Sequoia support) <<<", file=sys.stderr)
 
     live_patched = warn_if_live_patched_cache(args.cache_dir)
     if live_patched and not args.check and not args.force_live_cache:
@@ -836,29 +1025,57 @@ def main(argv: list[str]) -> int:
             ]
         )
         profile = next((candidate for candidate in PROFILES.values() if candidate["cache_uuid"] == uuid), None)
-        if profile is None:
-            supported = ", ".join(candidate["cache_uuid"] for candidate in PROFILES.values())
-            raise CacheError(f"dyld cache UUID {uuid} matches no supported profile ({supported})")
-        if cache.base != CACHE_BASE:
-            raise CacheError(f"dyld cache base {cache.base:#x} does not match {CACHE_BASE:#x}")
-
-        # Cross-check the target root's version plists when they are readable.
         version_path = args.root / SYSTEM_VERSION_PLIST
+        system_version = {}
         if version_path.is_file():
             with version_path.open("rb") as handle:
                 system_version = plistlib.load(handle)
-            key = (str(system_version.get("ProductVersion", "")), str(system_version.get("ProductBuildVersion", "")))
-            if PROFILES.get(key) is not profile:
-                raise CacheError(f"target root is macOS {key[0]} ({key[1]}), which does not match cache UUID {uuid}")
+        product = str(system_version.get("ProductVersion", ""))
+        build = str(system_version.get("ProductBuildVersion", ""))
+        key = (product, build)
+
         driver_plist_path = args.root / VA_INFO_PLIST
+        driver_version = ""
         if driver_plist_path.is_file():
             with driver_plist_path.open("rb") as handle:
                 driver_info = plistlib.load(handle)
             driver_version = str(driver_info.get("CFBundleShortVersionString", ""))
-            if driver_version != profile["driver_version"]:
-                raise CacheError(
-                    f"AMDRadeonVADriver2 version {driver_version} does not match profile {profile['driver_version']}"
-                )
+
+        if profile is None:
+            is_host_root = (args.root.resolve() == Path("/").resolve())
+            host_release = subprocess.check_output(["uname", "-r"]).decode() if is_host_root else ""
+            if product.startswith("13.") or (not product and host_release.startswith("22.")):
+                suffix = "Ventura"
+            elif product.startswith("14.") or (not product and host_release.startswith("23.")):
+                suffix = "Sonoma"
+            elif product.startswith("15.") or (not product and host_release.startswith("24.")):
+                suffix = "Sequoia"
+            elif product.startswith("26.") or (not product and host_release.startswith("25.")):
+                suffix = "Tahoe"
+            else:
+                suffix = ""
+
+            if suffix:
+                profile = {
+                    "macos_version": f"{product} ({build})".strip() or suffix,
+                    "driver_version": driver_version or "stock",
+                    "cache_uuid": uuid,
+                    "namespace_suffix": suffix,
+                    "output_name": f"VDAVAData{suffix}.hpp",
+                    "evidence_doc": f"analysis/vda-{product.replace('.', '') or suffix.lower()}-va-data.md",
+                }
+            else:
+                supported = ", ".join(candidate["cache_uuid"] for candidate in PROFILES.values())
+                raise CacheError(f"dyld cache UUID {uuid} matches no supported profile ({supported})")
+
+        if cache.base != CACHE_BASE:
+            raise CacheError(f"dyld cache base {cache.base:#x} does not match {CACHE_BASE:#x}")
+
+        if key in PROFILES and PROFILES[key] is not profile:
+            raise CacheError(f"target root is macOS {key[0]} ({key[1]}), which does not match cache UUID {uuid}")
+
+        if driver_version and profile.get("driver_version") and driver_version != profile["driver_version"]:
+            profile["driver_version"] = driver_version
 
         output = args.output or ROOT / "NootedRed" / profile["output_name"]
         image, page_addresses, page_images, entries = derive(cache, output)

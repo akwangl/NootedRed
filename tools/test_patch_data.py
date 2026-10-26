@@ -63,11 +63,11 @@ def load_arrays(path):
     return arrays, text
 
 
-def find_all(haystack, needle):
+def find_all(haystack, needle, mask=None):
     offsets = []
     start = 0
     while True:
-        offset = find_at(haystack, needle, start)
+        offset = find_at(haystack, needle, start, mask)
         if offset < 0:
             return offsets
         offsets.append(offset)
@@ -75,13 +75,23 @@ def find_all(haystack, needle):
     return offsets
 
 
-def find_at(haystack, needle, start):
+def find_at(haystack, needle, start, mask=None):
     if not needle:
         return -1
     limit = len(haystack) - len(needle)
-    for index in range(start, limit + 1):
-        if haystack[index : index + len(needle)] == needle:
-            return index
+    if mask is None:
+        for index in range(start, limit + 1):
+            if haystack[index : index + len(needle)] == needle:
+                return index
+    else:
+        for index in range(start, limit + 1):
+            match = True
+            for i in range(len(needle)):
+                if (haystack[index + i] & mask[i]) != (needle[i] & mask[i]):
+                    match = False
+                    break
+            if match:
+                return index
     return -1
 
 
@@ -111,14 +121,22 @@ def check_page_patches(arrays, text):
     return len(rows)
 
 
-def signature_page_name(arrays, page_offset):
+def signature_page_name(arrays, page_offset, context_name=""):
+    suffix = "_Sequoia"
+    if "_Sonoma" in context_name:
+        suffix = "_Sonoma"
+    elif "_Tahoe" in context_name:
+        suffix = "_Tahoe"
+    elif "_Ventura" in context_name:
+        suffix = "_Ventura"
+
     if page_offset.startswith("~"):
-        return "kMTLControlPage_Sequoia" if "kMTLControlPage_Sequoia" in arrays else "kMTLControlPage"
+        return f"kMTLControlPage{suffix}" if f"kMTLControlPage{suffix}" in arrays else "kMTLControlPage"
     offset = int(page_offset, 16)
     if offset == 0xE000:
-        return "kGLDriverHwInfoPage_Sequoia" if "kGLDriverHwInfoPage_Sequoia" in arrays else "kGLDriverHwInfoPage"
+        return f"kGLDriverHwInfoPage{suffix}" if f"kGLDriverHwInfoPage{suffix}" in arrays else "kGLDriverHwInfoPage"
     if offset == 0x8000:
-        return "kGLDriverDualQuadPage_Sequoia" if "kGLDriverDualQuadPage_Sequoia" in arrays else "kGLDriverDualQuadPage"
+        return f"kGLDriverDualQuadPage{suffix}" if f"kGLDriverDualQuadPage{suffix}" in arrays else "kGLDriverDualQuadPage"
     return None
 
 
@@ -145,13 +163,13 @@ def check_signatures(arrays, text):
         find = arrays[find_name]
         check(len(find) == len(replace), f"{find_name}/{replace_name} sizes differ")
 
-        page_name = signature_page_name(arrays, page_offset)
+        page_name = signature_page_name(arrays, page_offset, context_name)
         check(page_name is not None, f"unknown resolver pageOffset {page_offset}")
         check(page_name in arrays, f"SignaturePatch needs page image {page_name}")
         page = arrays[page_name]
         check(len(page) == 0x1000, f"{page_name} must be one 4 KiB page")
 
-        offsets = find_all(page, context)
+        offsets = find_all(page, context, mask)
         check(offsets, f"{context_name} context not found in {page_name}")
         for offset in offsets:
             site = page[offset + patch_offset : offset + patch_offset + len(replace)]
@@ -162,15 +180,21 @@ def check_signatures(arrays, text):
 def check_patch_sets(text):
     sets = list(PATCH_SET_RE.finditer(text))
     check(len(sets) >= 2, "no PatchSet rows found")
-    versions = set()
+    ranges = []
     for match in sets:
         name, major, minor, max_major, max_minor = match.groups()
         major, minor, max_major, max_minor = map(int, (major, minor, max_major, max_minor))
         check((major, minor) <= (max_major, max_minor), f"PatchSet {name}: minVersion > maxVersion")
-        versions.add((major, minor))
+        ranges.append(((major, minor), (max_major, max_minor)))
         check("KernelVersion" not in name, f"PatchSet {name}: malformed entry")
-    check((24, 6) in versions, "missing a Darwin 24.6 (macOS 15.8.1) PatchSet")
-    check((25, 6) in versions, "missing a Darwin 25.6 (macOS 26.7.1) PatchSet")
+
+    def covers(target):
+        return any(start <= target <= end for start, end in ranges)
+
+    check(covers((24, 6)), "missing a Darwin 24.6 (macOS 15.8.1) PatchSet")
+    check(covers((25, 6)), "missing a Darwin 25.6 (macOS 26.7.1) PatchSet")
+    check(covers((23, 6)), "missing a Darwin 23.6 (macOS 14.x) PatchSet")
+    check(covers((22, 6)), "missing a Darwin 22.6 (macOS 13.x) PatchSet")
     return len(sets)
 
 

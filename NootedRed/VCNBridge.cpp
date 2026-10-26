@@ -31,6 +31,7 @@
 #include <NRed.hpp>
 #include <VCNBridge.hpp>
 #include <VCNKernelData.hpp>
+#include <VCNKernelDataVentura.hpp>
 #if __has_include(<VCNKernelDataTahoe.hpp>)
 #include <VCNKernelDataTahoe.hpp>
 #define NRED_HAS_VCN_TAHOE 1
@@ -54,20 +55,22 @@ namespace
     const char* const kBootArgVDA = "-NRedVDA";
     const char* const kBootArgAVC = "-NRedAVC";
     const char* const kBootArgAVCEncode = "-NRedAVCEncode";
-    // Diagnostic: keep the X5000 GFXOFF state disabled while the bridged VCN0 engine is active.
-    const char* const kBootArgNoGfxOff = "-NRedVCNNoGfxOff";
     // Escape hatch: skip the bounded wait for VCN idle in the teardown paths.
     const char* const kBootArgNoDrain = "-NRedVCNNoDrain";
 
-    // Upper bound for the teardown drain.  The engine is normally idle within a frame time; the bound keeps
+    // Upper bound for the teardown drain. The engine is normally idle within a frame time; the bound keeps
     // a wedged channel from stalling the client/accelerator stop path for longer than a QuickLook timeout.
     constexpr UInt32 kDrainTimeoutMs = 250;
     constexpr UInt32 kDrainStepMs    = 5;
 
-    // All generated data in this tree was derived from macOS 15.8.1 (24H32, Darwin 24.6.0),
-    // macOS 14.8.9 (23J631, Darwin 23.6.0) and macOS 26.7.1 (25G241, Darwin 25.6.0).
+    // All generated data in this tree was derived from
+    // macOS 15.8.1 (24H32, Darwin 24.6.0), macOS 14.8.9 (23J631, Darwin 23.6.0)
+    // and macOS 26.7.1 (25G241, Darwin 25.6.0).
     bool isSupportedOS()
     {
+        if (currentKernelVersion().major() == 22 && currentKernelVersion().minor() == 6) {
+            return true;
+        }
         if (currentKernelVersion().major() == 24
             || (currentKernelVersion().major() == 23 && currentKernelVersion().minor() == 6)) {
             return true;
@@ -86,6 +89,10 @@ namespace
         if (!isSupportedOS()) { return false; }
         // If the early-boot version string is not populated yet, the ABI guards are the remaining
         // protection; once it is visible, require the matching minor release family.
+        if (currentKernelVersion().major() == 22) {
+            // Only the build whose kernel ABI and user-space pages were generated and checked.
+            return strcmp(osversion, "22G513") == 0;
+        }
         if (osversion[0] == '\0') { return true; }
         if (currentKernelVersion().major() == 24) {
             return strncmp(osversion, "24H", 3) == 0 || strncmp(osversion, "24G", 3) == 0;
@@ -116,7 +123,9 @@ namespace
         // the engine (0x1638 is validated; the other VCN 2.x APUs are experimental) may use this bridge.  The
         // generated ABI guards and the exact build check remain the hard safety gates.
         const auto* const profile = DeviceProfile::current();
-        return isSupportedBuild() && !NRed::singleton().hasExternalVideo() && profile != nullptr
+        const bool venturaDevice = currentKernelVersion().major() != 22
+                                   || NRed::singleton().getDeviceID() == 0x1638;
+        return venturaDevice && isSupportedBuild() && !NRed::singleton().hasExternalVideo() && profile != nullptr
                && profile->media.vcnGeneration == DeviceProfile::kVcn2_2 && profile->media.hasVCN0;
     }
 
@@ -165,6 +174,11 @@ namespace
         const VCNKernelData::SlotGuard* guards{nullptr};
         const char*                     tableSymbol{nullptr};
         size_t                          count{0};
+        if (currentKernelVersion().major() == 22) {
+            guards      = old ? VCNKernelDataVentura::Guards5000 : VCNKernelDataVentura::Guards6000;
+            count       = old ? arrsize(VCNKernelDataVentura::Guards5000) : arrsize(VCNKernelDataVentura::Guards6000);
+            tableSymbol = old ? VCNKernelDataVentura::Table5000 : VCNKernelDataVentura::Table6000;
+        } else
 #ifdef NRED_HAS_VCN_TAHOE
         if (useTahoeVCNData()) {
             guards      = old ? VCNKernelDataTahoe::Guards5000 : VCNKernelDataTahoe::Guards6000;
@@ -224,10 +238,10 @@ VCNBridge& VCNBridge::singleton() { return moduleInstance; }
 void VCNBridge::init()
 {
     this->requested = checkKernelArgument(kBootArgVDA) || checkKernelArgument(kBootArgAVC) || checkKernelArgument(kBootArgAVCEncode);
-    this->noGfxOff = this->requested && checkKernelArgument(kBootArgNoGfxOff);
-    if (this->noGfxOff) {
-        NRed::singleton().setProp32("NRedVCNNoGfxOff", 1);
-        SYSLOG("VCN", "VCN GFXOFF hold requested; X5000 enableGfxOff will be ignored");
+    this->noDrain = this->requested && checkKernelArgument(kBootArgNoDrain);
+    if (this->noDrain) {
+        NRed::singleton().setProp32("NRedVCNNoDrain", 1);
+        SYSLOG("VCN", "VCN teardown drain disabled by boot argument");
     }
     this->noDrain = this->requested && checkKernelArgument(kBootArgNoDrain);
     if (this->noDrain) {
@@ -240,7 +254,7 @@ void VCNBridge::init()
     }
 
     if (!isSupportedOS()) {
-        SYSLOG("VCN", "VCN data is for macOS 14.x (Darwin 23.6), 15.x (Darwin 24.6) or 26.x (Darwin 25.6); hardware decode boot arg is ignored on this build");
+        SYSLOG("VCN", "VCN data supports Ventura 13.6.4 (22G513), Darwin 23.6/24.6/25.6; hardware decode ignored on this build");
         this->requested = false;
         return;
     }
@@ -288,11 +302,13 @@ bool VCNBridge::acceleratorStart(void* const self, IOService* const provider)
 {
     auto& bridge = singleton();
     if (bridge.requested) {
-        // Build marker.  It cannot live in init(): that runs at kext load, before NRed::iGPU is set, and
+        // Build marker. It cannot live in init(): that runs at kext load, before NRed::iGPU is set, and
         // setProp32() is a no-op while iGPU is null, so the marker never reached the registry.
         NRed::singleton().setProp32("NRedVCNDrainBuild", 2);
+        if (currentKernelVersion().major() == 22) {
+            NRed::singleton().setProp32("NRedVenturaVDARevision", 1);
+        }
         NRed::singleton().setProp32("NRedVCNAccelStartSeen", 1);
-        if (bridge.noGfxOff) { NRed::singleton().setProp32("NRedVCNNoGfxOff", 1); }
         publishStage(5);
     }
 
@@ -436,30 +452,6 @@ UInt64 VCNBridge::surfaceCopy(void* const self, void* const input, const UInt64 
     return reinterpret_cast<UInt64 (*)(void*, void*, UInt64, void*)>(address)(self, input, size, event);
 }
 
-void VCNBridge::noopEnableGfxOff(void* const self)
-{
-    auto& bridge = singleton();
-    if (!bridge.gfxOffHeld) {
-        bridge.gfxOffHeld = true;
-        NRed::singleton().setProp32("NRedVCNGfxOffHeld", 1);
-        SYSLOG("VCN", "ignoring X5000 enableGfxOff while the VCN bridge is active");
-    }
-    (void)self;
-}
-
-void VCNBridge::holdGfxOff()
-{
-    auto& bridge = singleton();
-    if (!bridge.noGfxOff || bridge.gfxOffHeld || bridge.hardwareHandle == nullptr
-        || bridge.notifyGfxAccess == 0) {
-        return;
-    }
-
-    reinterpret_cast<void (*)(void*)>(bridge.notifyGfxAccess)(bridge.hardwareHandle);
-    bridge.gfxOffHeld = true;
-    NRed::singleton().setProp32("NRedVCNGfxOffHeld", 1);
-    SYSLOG("VCN", "GFXOFF held off for the bridged VCN engine");
-}
 
 void VCNBridge::drainVCN(const char* const reason)
 {
@@ -520,7 +512,6 @@ void VCNBridge::drainVCN(const char* const reason)
 void VCNBridge::signalWork(void* const hardware)
 {
     auto& bridge = singleton();
-    bridge.holdGfxOff();
     if (bridge.engineEnabled() && bridge.notifyGfxAccess != 0) {
         reinterpret_cast<void (*)(void*)>(bridge.notifyGfxAccess)(hardware);
         return;
@@ -532,7 +523,6 @@ void VCNBridge::signalWork(void* const hardware)
 bool VCNBridge::initHardware(void* const self, const UInt32 channel)
 {
     auto& bridge = singleton();
-    bridge.holdGfxOff();
     const auto result = FunctionCast(initHardware, bridge.orgInitHardware)(self, channel);
     NRed::singleton().setProp32("NRedVCNLastHardwareInit", static_cast<UInt32>(result));
 
@@ -620,12 +610,6 @@ void VCNBridge::processKext(KernelPatcher& patcher, const size_t id, const mach_
                       this->surfaceCopy5000, slide, size);
         ok &= resolve(patcher, id, "__ZN30AMDRadeonX5000_AMDGFX9Hardware15notifyGfxAccessEv", this->notifyGfxAccess,
                       slide, size);
-        if (this->noGfxOff) {
-            ok &= resolve(patcher, id, "__ZN28AMDRadeonX5000_AMDRTHardware13disableGfxOffEv",
-                          this->disableGfxOff5000, slide, size);
-            ok &= resolve(patcher, id, "__ZN28AMDRadeonX5000_AMDRTHardware12enableGfxOffEv",
-                          this->enableGfxOff5000, slide, size);
-        }
         if (!ok) {
             publishReject(9);
             SYSLOG("VCN", "failed to resolve X5000 bridge symbols");
@@ -668,18 +652,6 @@ void VCNBridge::processKext(KernelPatcher& patcher, const size_t id, const mach_
             SYSLOG("VCN", "Failed to route X5000 VCN entry points");
             this->x5000Prepared = false;
             return;
-        }
-
-        if (this->noGfxOff) {
-            KernelPatcher::RouteRequest gfxRoute{"__ZN28AMDRadeonX5000_AMDRTHardware12enableGfxOffEv",
-                                                  noopEnableGfxOff, this->enableGfxOff5000};
-            if (!patcher.routeMultiple(id, &gfxRoute, 1, slide, size)) {
-                patcher.clearError();
-                publishReject(12);
-                SYSLOG("VCN", "Failed to route X5000 enableGfxOff for the GFXOFF hold");
-                this->x5000Prepared = false;
-                return;
-            }
         }
 
         KernelPatcher::RouteRequest castRoute{"__ZN15OSMetaClassBase12safeMetaCastEPKS_PK11OSMetaClass", safeMetaCast,
@@ -755,6 +727,10 @@ void VCNBridge::processKext(KernelPatcher& patcher, const size_t id, const mach_
         size_t                           callPatchCount = 0;
         const VCNKernelData::CallPatch*  callPatches{nullptr};
         const char*                      signalSymbol{nullptr};
+        if (currentKernelVersion().major() == 22) {
+            callPatches  = VCNKernelDataVentura::getCallPatches(callPatchCount);
+            signalSymbol = VCNKernelDataVentura::SignalSymbol;
+        } else
 #ifdef NRED_HAS_VCN_TAHOE
         if (useTahoeVCNData()) {
             callPatches  = VCNKernelDataTahoe::getCallPatches(callPatchCount);
@@ -766,6 +742,7 @@ void VCNBridge::processKext(KernelPatcher& patcher, const size_t id, const mach_
             signalSymbol = VCNKernelData::SignalSymbol;
         }
         static constexpr size_t kMaxCallPatches = 32;
+        static_assert(arrsize(VCNKernelDataVentura::CallPatches) <= kMaxCallPatches);
         static_assert(arrsize(VCNKernelData::CallPatches_Sonoma) <= kMaxCallPatches);
         static_assert(arrsize(VCNKernelData::CallPatches_Sequoia) <= kMaxCallPatches);
 #ifdef NRED_HAS_VCN_TAHOE
