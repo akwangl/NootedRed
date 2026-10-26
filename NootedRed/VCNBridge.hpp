@@ -72,19 +72,6 @@ class VCNBridge
     mach_vm_address_t surfaceCopy5000{0};
     mach_vm_address_t notifyGfxAccess{0};
 
-    // Teardown drain. Apple's VA driver releases a decode buffer as soon as the last submission is queued,
-    // so a VCN read that is still in flight can hit an unmapped page, wedge channel 12 and take the whole GPU
-    // down through the reset/watchdog path. The client and accelerator stop paths therefore wait, bounded,
-    // for the bridged engine to report idle before teardown is allowed to continue.
-    mach_vm_address_t vcnIsIdle{0};
-    mach_vm_address_t vcnWaitForIdle{0};
-    void*             vcnEngine{nullptr};
-    bool              noDrain{false};
-    UInt32            drainCount{0};
-    UInt32            drainTimeouts{0};
-    UInt32            lastWaitMs{0};
-    UInt32            maxWaitMs{0};
-
     // Teardown drain.  Apple's VA driver releases a decode buffer as soon as the last submission is queued,
     // so a VCN read that is still in flight can hit an unmapped page, wedge channel 12 and take the whole GPU
     // down through the reset/watchdog path.  The client and accelerator stop paths therefore wait, bounded,
