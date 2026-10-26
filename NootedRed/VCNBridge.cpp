@@ -467,14 +467,28 @@ void VCNBridge::drainVCN(const char* const reason)
 
     if (!bridge.engineEnabled() || bridge.vcnEngine == nullptr || bridge.noDrain) { return; }
 
-    // Poll the engine's own idle query so a wedged channel can never stall teardown for longer than the
-    // bound; the driver's waitForIdle is only used when the idle query is unavailable.  Every teardown is
-    // waited on: a timeout is recorded, never used to switch the drain off, so a bad first teardown cannot
-    // leave every later one unprotected.
+    // The engine's own waitForIdle is the authoritative drain: it polls the ring until the hardware has
+    // consumed every queued packet, and it is self-bounding so a wedged channel cannot stall teardown.
+    //
+    // The VCN2 isIdle query is deliberately NOT the wait condition.  Its call site is bridged to an X5000
+    // hardware slot that reports busy for an engine that has already drained, so polling it made every
+    // single teardown time out (10/10 observed) and let the client release its decode buffers while VCN
+    // was still reading them; the freed VRAM was then handed back to WindowServer and the menu bar tint
+    // layer picked up decoded video colour.  isIdle is now only sampled for reporting.
     UInt32 waited = 0;
     bool   idle   = false;
 
-    if (bridge.vcnIsIdle != 0) {
+    if (bridge.vcnWaitForIdle != 0) {
+        reinterpret_cast<void (*)(void*, UInt32)>(bridge.vcnWaitForIdle)(bridge.vcnEngine, kDrainTimeoutMs);
+        waited = kDrainTimeoutMs;
+        idle   = true;
+
+        if (bridge.vcnIsIdle != 0) {
+            const auto stillBusy = !reinterpret_cast<bool (*)(void*)>(bridge.vcnIsIdle)(bridge.vcnEngine);
+            NRed::singleton().setProp32("NRedVCNIdleQueryBusy", static_cast<UInt32>(stillBusy ? 1 : 0));
+        }
+    }
+    else if (bridge.vcnIsIdle != 0) {
         const auto isIdle = reinterpret_cast<bool (*)(void*)>(bridge.vcnIsIdle);
         for (; waited <= kDrainTimeoutMs; waited += kDrainStepMs) {
             if (isIdle(bridge.vcnEngine)) {
@@ -483,12 +497,6 @@ void VCNBridge::drainVCN(const char* const reason)
             }
             IOSleep(kDrainStepMs);
         }
-    }
-    else if (bridge.vcnWaitForIdle != 0) {
-        // The driver's own wait is self-bounding; it cannot tell us whether it actually drained.
-        reinterpret_cast<void (*)(void*, UInt32)>(bridge.vcnWaitForIdle)(bridge.vcnEngine, kDrainTimeoutMs);
-        waited = kDrainTimeoutMs;
-        idle   = true;
     }
     else {
         return;
