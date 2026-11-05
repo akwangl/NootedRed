@@ -406,12 +406,14 @@ void VCNBridge::clientStop(void* const self, void* const provider)
 void VCNBridge::taskFreeAllGPUMappings(void* const self)
 {
     auto& bridge = singleton();
-    bridge.drainVCN("task freeAllGPUMappings");
+    // Non-blocking drain: allow active GPU slice to finish in microseconds without
+    // sleeping, avoiding watchdog stalls (shutdown_stall) when multiple processes exit during reboot.
+    bridge.drainVCN("task freeAllGPUMappings", false);
 
     FunctionCast(taskFreeAllGPUMappings, bridge.orgTaskFreeAllGPUMappings)(self);
 }
 
-void VCNBridge::drainVCN(const char* const reason)
+void VCNBridge::drainVCN(const char* const reason, const bool allowSleep)
 {
     auto& bridge = singleton();
     if (!bridge.engineEnabled() || bridge.vcnEngine == nullptr) { return; }
@@ -437,6 +439,11 @@ void VCNBridge::drainVCN(const char* const reason)
             }
         }
 
+        if (!allowSleep) {
+            DBGLOG("VCN", "VCN engine busy on non-blocking task teardown; continuing without sleep");
+            return;
+        }
+
         // 3. Millisecond sleep fallback for rare multi-slice or heavy frame teardowns (bounded to 50ms).
         constexpr UInt32 kDrainTimeoutMs = 50;
         constexpr UInt32 kDrainStepMs    = 2;
@@ -454,7 +461,9 @@ void VCNBridge::drainVCN(const char* const reason)
         }
     }
     else if (bridge.vcnWaitForIdle != 0) {
-        reinterpret_cast<void (*)(void*, UInt32)>(bridge.vcnWaitForIdle)(bridge.vcnEngine, 50);
+        if (allowSleep) {
+            reinterpret_cast<void (*)(void*, UInt32)>(bridge.vcnWaitForIdle)(bridge.vcnEngine, 50);
+        }
     }
 }
 

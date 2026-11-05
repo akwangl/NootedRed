@@ -217,7 +217,12 @@ IOReturn Backlight::wrapGetAttributeForConnection(IOService* framebuffer, IOInde
         return kIOReturnSuccess;
     }
 
-    if (attribute == kConnectionEnable && connectIndex == 0 && (ret != kIOReturnSuccess || (value != nullptr && *value == 0))) {
+    static bool sLinkEverEnabled = false;
+    if (ret == kIOReturnSuccess && value != nullptr && *value != 0) {
+        sLinkEverEnabled = true;
+    }
+    else if (!sLinkEverEnabled && attribute == kConnectionEnable && connectIndex == 0 &&
+             (ret != kIOReturnSuccess || (value != nullptr && *value == 0))) {
         if (singleton().embeddedPanelLink != nullptr) {
             // Early boot race condition on laptops with internal eDP panels:
             // When WindowServer starts rapidly (e.g. SetApfsTrimTimeout=0, fast NVMe, non-verbose boot),
@@ -229,6 +234,7 @@ IOReturn Backlight::wrapGetAttributeForConnection(IOService* framebuffer, IOInde
                 ret = FunctionCast(wrapGetAttributeForConnection, singleton().orgGetAttributeForConnection)(
                     framebuffer, connectIndex, attribute, value);
                 if (ret == kIOReturnSuccess && value != nullptr && *value != 0) {
+                    sLinkEverEnabled = true;
                     break;
                 }
             }

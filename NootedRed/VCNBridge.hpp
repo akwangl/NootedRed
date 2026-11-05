@@ -120,6 +120,6 @@ private:
     static UInt64        surfaceCopy(void* self, void* input, UInt64 size, void* event);
     static void          signalWork(void* hardware);
     static bool          initHardware(void* self, UInt32 channel);
-    void                 drainVCN(const char* reason);
+    void                 drainVCN(const char* reason, bool allowSleep = true);
     static OSMetaClassBase* safeMetaCast(const OSMetaClassBase* object, const OSMetaClass* target);
 };
