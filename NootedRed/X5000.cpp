@@ -661,13 +661,6 @@ bool X5000::wrapAllocateLargeBlocks(void* const self, void* const elem, const UI
         return false;
     }
 
-    // Attempt original driver allocation first if available
-    if (inst.orgAllocateLargeBlocks != 0 &&
-        FunctionCast(wrapAllocateLargeBlocks, inst.orgAllocateLargeBlocks)(
-            self, elem, size, align, minBlockSize, orig, opType, onlyNonVisible)) {
-        return true;
-    }
-
     const UInt64 blockGranularity = minBlockSize >= PAGE_SIZE ? minBlockSize : 0x10000ULL;
     const UInt64 roundedSize =
         size > blockGranularity ? ((size + blockGranularity - 1) & ~(blockGranularity - 1)) : pageAlignedSize;
@@ -686,6 +679,13 @@ bool X5000::wrapAllocateLargeBlocks(void* const self, void* const elem, const UI
 
         // Never fragment visible scanout surfaces or allocate into non-visible range (allocType = 1).
         return false;
+    }
+
+    // Attempt original driver allocation first for non-visible GPU buffers if available
+    if (inst.orgAllocateLargeBlocks != 0 &&
+        FunctionCast(wrapAllocateLargeBlocks, inst.orgAllocateLargeBlocks)(
+            self, elem, size, align, minBlockSize, orig, opType, onlyNonVisible)) {
+        return true;
     }
 
     // For non-visible allocations (onlyNonVisible == true):
@@ -981,12 +981,24 @@ bool X5000::fixedGetDisplayInfo(AMDRadeonX5000_AMDHWDisplay* const self, const U
     // If the kernel and WindowServer start quickly (e.g. SetApfsTrimTimeout=0, fast NVMe, non-verbose boot),
     // WindowServer queries display status while asynchronous DCN/eDP link training is still settling.
     // When CRT is enabled for the primary built-in display (fbIndex == 0), guarantee online status
-    // to prevent CoreDisplay from logging "Setting offline display 0x00000000 main" and aborting WindowServer.
-    if (!online && isCRTEnabled && fbIndex == 0) {
+    // only during the initial boot handshake to prevent CoreDisplay from aborting WindowServer.
+    // Once the display has established online status, never override subsequent offline reports,
+    // allowing clean display blanking and teardown on sleep, restart, and shutdown.
+    static bool sInitialOnlineEstablished = false;
+    if (online) {
+        sInitialOnlineEstablished = true;
+    } else if (!sInitialOnlineEstablished && isCRTEnabled && fbIndex == 0) {
         online = true;
     }
 
     fbInfo->isOnline = online;
+
+    if (!online) {
+        displayState.status.setIsEnabled(false);
+        fbInfo->size      = 0;
+        fbInfo->crtOffset = 0;
+        return true;
+    }
 
     self->fedsParamInfo()[fbIndex].crtIndex = 0;
     self->fedsParamInfo()[fbIndex].scaledW  = 0;
@@ -1007,8 +1019,8 @@ bool X5000::fixedGetDisplayInfo(AMDRadeonX5000_AMDHWDisplay* const self, const U
             fbInfo->rect.width  = displayState.pixelInfo.activeWidth;
             fbInfo->rect.height = displayState.pixelInfo.activeHeight;
 
-            // If this framebuffer is actively driving a display mode with valid geometry, ensure it is marked online.
-            if (isCRTEnabled && fbInfo->rect.width > 0 && fbInfo->rect.height > 0) {
+            // If this framebuffer is actively driving a display mode during early boot, ensure it is marked online.
+            if (!sInitialOnlineEstablished && isCRTEnabled && fbInfo->rect.width > 0 && fbInfo->rect.height > 0) {
                 fbInfo->isOnline = true;
             }
         }
