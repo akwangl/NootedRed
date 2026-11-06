@@ -661,16 +661,37 @@ bool X5000::wrapAllocateLargeBlocks(void* const self, void* const elem, const UI
         return false;
     }
 
+    // Attempt original driver allocation first if available
+    if (inst.orgAllocateLargeBlocks != 0 &&
+        FunctionCast(wrapAllocateLargeBlocks, inst.orgAllocateLargeBlocks)(
+            self, elem, size, align, minBlockSize, orig, opType, onlyNonVisible)) {
+        return true;
+    }
+
     const UInt64 blockGranularity = minBlockSize >= PAGE_SIZE ? minBlockSize : 0x10000ULL;
     const UInt64 roundedSize =
         size > blockGranularity ? ((size + blockGranularity - 1) & ~(blockGranularity - 1)) : pageAlignedSize;
     const UInt64 safeAlign = align >= blockGranularity ? align : blockGranularity;
 
+    // For visible allocations (onlyNonVisible == false):
+    // Display scanout surfaces, framebuffers, and CPU-visible buffers MUST reside in the visible
+    // aperture [reservedNdrvEnd, 256MB] (allocType = 0) and MUST be physically contiguous.
+    // AMD DCN hardware cannot scan out non-contiguous pages.
+    if (!onlyNonVisible) {
+        // 1. Contiguous attempt in Visible range [reservedNdrvEnd, 256MB] (allocType = 0)
+        if (inst.orgAllocate(self, elem, size, align, 0, false, orig, opType)) { return true; }
+
+        // 2. Contiguous attempt in Full UMA range [reservedNdrvEnd, totalVRAMSize] (allocType = 2)
+        if (inst.orgAllocate(self, elem, size, align, 2, false, orig, opType)) { return true; }
+
+        // Never fragment visible scanout surfaces or allocate into non-visible range (allocType = 1).
+        return false;
+    }
+
+    // For non-visible allocations (onlyNonVisible == true):
+    // GPU-private buffers, compute, video decoder, and render targets.
     // 1. Contiguous attempt in Non-Visible range [256MB, totalVRAMSize] (allocType = 1)
     if (inst.orgAllocate(self, elem, size, align, 1, false, orig, opType)) { return true; }
-
-    // 2. Contiguous attempt in Visible range [reservedNdrvEnd, 256MB] (allocType = 0) if allowed
-    if (!onlyNonVisible && inst.orgAllocate(self, elem, size, align, 0, false, orig, opType)) { return true; }
 
     auto tryNonContiguousRange = [&](const UInt32 allocType) -> bool {
         if (roundedSize > blockGranularity &&
@@ -705,16 +726,16 @@ bool X5000::wrapAllocateLargeBlocks(void* const self, void* const elem, const UI
         return false;
     };
 
-    // 3. Non-contiguous attempts in Non-Visible range [256MB, totalVRAMSize] (allocType = 1)
+    // 2. Non-contiguous attempts in Non-Visible range [256MB, totalVRAMSize] (allocType = 1)
     if (tryNonContiguousRange(1)) { return true; }
 
-    // 4. Fallback to Full UMA VRAM range [reservedNdrvEnd, totalVRAMSize] (allocType = 2):
+    // 3. Fallback to Full UMA VRAM range [reservedNdrvEnd, totalVRAMSize] (allocType = 2):
     //    On AMD APUs, BAR0-visible and non-visible UMA are backed by identical system RAM,
     //    and totalFreeMemory() includes free space in [reservedNdrvEnd, 256MB].
     if (inst.orgAllocate(self, elem, size, align, 2, false, orig, opType)) { return true; }
     if (tryNonContiguousRange(2)) { return true; }
 
-    // 5. Fine-grained non-contiguous fallback (16KB -> 4KB segment lengths with 64KB+ start alignment)
+    // 4. Fine-grained non-contiguous fallback (16KB -> 4KB segment lengths with 64KB+ start alignment)
     //    when VRAM is heavily fragmented:
     if (pageAlignedSize > 0x4000ULL) {
         const UInt64 align16K = (pageAlignedSize + 0x3FFFULL) & ~0x3FFFULL;
@@ -960,13 +981,8 @@ bool X5000::fixedGetDisplayInfo(AMDRadeonX5000_AMDHWDisplay* const self, const U
     // If the kernel and WindowServer start quickly (e.g. SetApfsTrimTimeout=0, fast NVMe, non-verbose boot),
     // WindowServer queries display status while asynchronous DCN/eDP link training is still settling.
     // When CRT is enabled for the primary built-in display (fbIndex == 0), guarantee online status
-    // only during the initial boot handshake to prevent CoreDisplay from aborting WindowServer.
-    // Once the display has established online status, never override subsequent offline reports,
-    // allowing clean display blanking and teardown on sleep, restart, and shutdown.
-    static bool sInitialOnlineEstablished = false;
-    if (online) {
-        sInitialOnlineEstablished = true;
-    } else if (!sInitialOnlineEstablished && isCRTEnabled && fbIndex == 0) {
+    // to prevent CoreDisplay from logging "Setting offline display 0x00000000 main" and aborting WindowServer.
+    if (!online && isCRTEnabled && fbIndex == 0) {
         online = true;
     }
 
@@ -991,8 +1007,8 @@ bool X5000::fixedGetDisplayInfo(AMDRadeonX5000_AMDHWDisplay* const self, const U
             fbInfo->rect.width  = displayState.pixelInfo.activeWidth;
             fbInfo->rect.height = displayState.pixelInfo.activeHeight;
 
-            // If this framebuffer is actively driving a display mode during early boot, ensure it is marked online.
-            if (!sInitialOnlineEstablished && isCRTEnabled && fbInfo->rect.width > 0 && fbInfo->rect.height > 0) {
+            // If this framebuffer is actively driving a display mode with valid geometry, ensure it is marked online.
+            if (isCRTEnabled && fbInfo->rect.width > 0 && fbInfo->rect.height > 0) {
                 fbInfo->isOnline = true;
             }
         }

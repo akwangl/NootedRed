@@ -197,7 +197,9 @@ void AMDRadeonX5000_AMDGFX9DCNDisplay::setCurrentDisplayOffset(AMDRadeonX5000_AM
                                   (value >> 32) & expansion.regShiftsMasks.primarySurfaceHi);
     self->getHWRegisters()->write(regOffs.hubpreqPrimarySurfaceAddress, value & 0xFFFFFFFF);
     expansion.lastSubmitFlipOffset = value;
-    while (self->isFlipPending(self, fbIndex)) { IODelay(100); }
+    for (size_t retries = 0; retries < 1000 && self->isFlipPending(self, fbIndex); ++retries) {
+        IODelay(100);
+    }
 }
 
 UInt32 AMDRadeonX5000_AMDGFX9DCNDisplay::writeWaitForVLine(AMDRadeonX5000_AMDHWDisplay*, UInt32* const, const UInt32,
